@@ -38,6 +38,6 @@ def load_gensim(embeddings_path, binary=False):
             del src2id["unk"]
         else:
             unk = numpy.zeros(len(embeddings[0]), dtype=numpy.float32)
-            src2id["UNK"] = len(src2id)
+            src2id["<UNK>"] = len(src2id)
             embeddings = numpy.concatenate((embeddings, [unk]))
     return embeddings, src2id, id2src

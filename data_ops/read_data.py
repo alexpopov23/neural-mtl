@@ -2,6 +2,10 @@ import collections
 import os
 
 import _elementtree
+import numpy
+import xml.etree.ElementTree as ET
+
+import tensorflow as tf
 
 import globals
 
@@ -49,10 +53,11 @@ def get_lemma_synset_maps(wsd_method, lemma2synsets, known_lemmas, lemma2id, syn
 
     """
     index_l, index_s = 0, 0
-    if wsd_method == "classification" or wsd_method == "multitask":
-        synset2id['notseen-n'], synset2id['notseen-v'], synset2id['notseen-a'], synset2id['notseen-r'] = 0, 1, 2, 3
-        index_s = 4
-    for lemma, synsets in lemma2synsets.iteritems():
+    # if wsd_method == "classification" or wsd_method == "multitask":
+    # synset2id['notseen-n'], synset2id['notseen-v'], synset2id['notseen-a'], synset2id['notseen-r'] = 0, 1, 2, 3
+    synset2id["<UNK>"] = 0
+    index_s = 1
+    for lemma, synsets in lemma2synsets.items():
         if (wsd_method == "classification" or wsd_method == "multitask") and lemma not in known_lemmas:
             continue
         lemma2id[lemma] = index_l
@@ -250,7 +255,7 @@ def read_data_uef(path, sensekey2synset, lemma2synsets, lemma2id={}, known_lemma
         code = fields[0]
         keys = fields[1:]
         codes2keys[code] = keys
-    tree = _elementtree.parse(os.path.join(path, path_data))
+    tree = ET.parse(os.path.join(path, path_data))
     doc = tree.getroot()
     corpora = doc.findall("corpus")
     for corpus in corpora:
@@ -272,11 +277,70 @@ def read_data_uef(path, sensekey2synset, lemma2synsets, lemma2id={}, known_lemma
                     if element.tag == "instance":
                         synsets = [sensekey2synset[key] for key in codes2keys[element.get("id")]]
                     else:
-                        synsets = ["unspecified"]
+                        synsets = ["<NONE>"]
                     current_sentence.append([wordform, lemma, pos, synsets])
                 data.append(current_sentence)
     if for_training is True:
         lemma2id, synset2id = get_lemma_synset_maps(wsd_method, lemma2synsets, known_lemmas, lemma2id,
                                                                     synset2id)
-    data = add_synset_ids(wsd_method, data, known_lemmas, synset2id)
+    # data = add_synset_ids(wsd_method, data, known_lemmas, synset2id)
     return data, lemma2id, known_lemmas, pos_types, synset2id
+
+def get_inputs(data, input2id, synset2id, input_format="lemma"):
+    input_ids, indices, gold_ids = [], [], []
+    for sentence in data:
+        current_sent, current_indices, current_gold_ids = [], [], []
+        for i, word in enumerate(sentence):
+            if input_format == "wordform":
+                current_sent.append(input2id[word[0]] if word[0] in input2id else input2id["<UNK>"])
+            elif input_format == "lemma":
+                current_sent.append(input2id[word[1]] if word[1] in input2id else input2id["<UNK>"])
+            if word[3][0] != "<NONE>":
+                # current_indices.append(i)
+                current_indices.append(True)
+                current_gold_ids.append([synset2id[synset] if synset in synset2id else synset2id["<UNK>"] for synset in word[3]])
+            else:
+                current_indices.append(False)
+        input_ids.append(current_sent)
+        indices.append(current_indices)
+        gold_ids.append(current_gold_ids)
+    # input_ids = numpy.asarray(input_ids)
+    # indices = numpy.asarray(indices)
+    # gold_ids = numpy.asarray(gold_ids)
+    input_ids = tf.ragged.constant(input_ids, dtype="int32")
+    indices = tf.ragged.constant(indices, dtype="bool")
+    gold_ids = tf.ragged.constant(gold_ids, dtype="int32")
+    return input_ids, indices, gold_ids
+
+
+def get_inputs2(data, input2id, synset2id, embeddings, input_format="lemma"):
+    input_ids, indices, gold_ids = [], [], []
+    for i, word in enumerate(data):
+        if input_format == "wordform":
+            input_ids.append(input2id[word[0]] if word[0] in input2id else input2id["<UNK>"])
+        elif input_format == "lemma":
+            input_ids.append(input2id[word[1]] if word[1] in input2id else input2id["<UNK>"])
+        if word[3][0] != "<NONE>":
+            # indices.append(i)
+            indices.append(True)
+            gold_ids.append(get_embedding(word[3], embeddings, synset2id))
+        else:
+            indices.append(False)
+    # input_ids = numpy.asarray(input_ids)
+    # indices = numpy.asarray(indices)
+    # gold_ids = numpy.asarray(gold_ids)
+    input_ids = tf.ragged.constant(input_ids, dtype="int32")
+    indices = tf.ragged.constant(indices, dtype="bool")
+    gold_ids = tf.ragged.constant(gold_ids, dtype="int32")
+    return input_ids, indices, gold_ids
+
+def get_embedding(srcs, embeddings, src2id):
+    for i, src in enumerate(srcs):
+        if id in src2id:
+            if i == 1:
+                embedding = embeddings[src2id[src]]
+            else:
+                embedding += embeddings[src2id[src]]
+    return embedding / len(srcs)
+
+
