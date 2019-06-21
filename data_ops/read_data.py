@@ -22,9 +22,12 @@ def get_wordnet_lexicon(lexicon_path):
     """
     lemma2synsets = {}
     lexicon = open(lexicon_path, "r")
+    max_synsets = 0
     for line in lexicon.readlines():
         fields = line.split(" ")
         lemma, synsets = fields[0], fields[1:]
+        if len(synsets) > max_synsets:
+            max_synsets = len(synsets)
         for entry in synsets:
             synset = entry[:10].strip()
             if lemma not in lemma2synsets:
@@ -32,7 +35,7 @@ def get_wordnet_lexicon(lexicon_path):
             else:
                 lemma2synsets[lemma].append(synset)
     lemma2synsets = collections.OrderedDict(sorted(lemma2synsets.items()))
-    return lemma2synsets
+    return lemma2synsets, max_synsets
 
 
 def get_lemma_synset_maps(wsd_method, lemma2synsets, known_lemmas, lemma2id, synset2id):
@@ -299,17 +302,17 @@ def get_ids(data, input2id, synset2id, input_format="lemma", max_length=100):
             elif input_format == "lemma":
                 current_sent.append(input2id[word[1]] if word[1] in input2id else input2id["<UNK>"])
             if word[3][0] != "<NONE>":
-                current_indices.append(1.0)
+                current_indices.append(True)
                 current_gold_ids.append([synset2id[synset] if synset in synset2id else synset2id["<UNK>"] for synset in word[3]])
             else:
-                current_indices.append(0.0)
+                current_indices.append(False)
                 current_gold_ids.append([synset2id["<UNK>"]])
         input_ids.append(current_sent)
         indices.append(current_indices)
         gold_ids.append(current_gold_ids)
         data_len = len(input_ids)
     input_ids = tf.ragged.constant(input_ids, dtype="int32")
-    indices = tf.ragged.constant(indices, dtype="float32")
+    indices = tf.ragged.constant(indices, dtype="bool")
     gold_ids = tf.ragged.constant(gold_ids, dtype="int32")
     return input_ids, indices, gold_ids, data_len
 
@@ -318,7 +321,7 @@ def get_sequence(x, data, indices, labels, embeddings):
     labels = tf.gather(labels, x)
     labels = tf.gather(embeddings, labels)
     labels = tf.reduce_mean(labels, 1)
-    indices = tf.gather(indices, x)
-    return (sequence, labels, indices)
+    mask = tf.gather(indices, x)
+    return ((sequence, mask), labels)
 
 

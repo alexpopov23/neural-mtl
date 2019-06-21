@@ -3,6 +3,7 @@ import pickle
 
 import tensorflow as tf
 from tensorflow.python import keras
+from tensorflow.python.keras.optimizer_v2.adam import Adam
 
 import model
 from data_ops import read_data, load_embeddings
@@ -79,7 +80,7 @@ if __name__ == "__main__":
         embeddings2, emb2_src2id, emb2_id2src = [], None, None
     if args.train_data_format == "uef" or args.test_data_format == "uef":
         sensekey2synset = pickle.load(open(args.sensekey2synset_path, "rb"))
-    lemma2synsets = read_data.get_wordnet_lexicon(args.lexicon_path)
+    lemma2synsets, max_synsets = read_data.get_wordnet_lexicon(args.lexicon_path)
 
     # Read the data sets
     if args.train_data_format == "naf":
@@ -147,10 +148,9 @@ if __name__ == "__main__":
     dataset = dataset.map(lambda x: read_data.get_sequence(x, train_input_ids, train_indices, train_gold_ids, embeddings1))
     dataset = dataset.shuffle(10000)
     dataset = dataset.padded_batch(int(args.batch_size),
-                                   padded_shapes=( (    (int(args.max_seq_length)),
-                                                        (int(args.max_seq_length), int(args.embeddings1_dim)),
-                                                        (int(args.max_seq_length)) ) ),
-                                   padding_values=(0, 0.0, 0.0) )
+                                   padded_shapes=( (    ( (int(args.max_seq_length)), (int(args.max_seq_length)) ),
+                                                        (int(args.max_seq_length), int(args.embeddings1_dim)) ) ),
+                                   padding_values=( (0, False), 0.0) )
 
     # Create the model architecture
     if args.wsd_method == "classification":
@@ -168,8 +168,41 @@ if __name__ == "__main__":
                             int(args.n_hidden),
                             float(args.dropout))
     model.summary()
-    model.compile(optimizer=keras.optimizers.Adam(),
-                  loss=loss,
-                  metrics=metrics,
-                  sample_weight_mode="temporal")
-    model.fit(dataset, epochs=2)
+    # model.compile(optimizer=keras.optimizers.Adam(),
+    #               loss=loss,
+    #               metrics=metrics,
+    #               sample_weight_mode="temporal")
+    # model.fit(dataset, epochs=2)
+
+    # optimizer = keras.optimizers.Adam()
+    optimizer = Adam()
+    loss_fn = keras.losses.MeanSquaredError()
+    metric_fn = keras.metrics.CosineSimilarity()
+    for epoch in range(3):
+        print('Start of epoch %d' % (epoch,))
+        step = 0
+        for (x_batch_train, mask), y_batch_train in dataset.__iter__():
+            with tf.GradientTape() as tape:
+                outputs = model(x_batch_train)
+                outputs = tf.boolean_mask(outputs, mask)
+                true_preds = tf.boolean_mask(y_batch_train, mask)
+                loss_value = loss_fn(true_preds, outputs)
+            grads = tape.gradient(loss_value, model.trainable_weights)
+            optimizer.apply_gradients(zip(grads, model.trainable_weights))
+            metric_value = metric_fn(true_preds, outputs)
+            if step % 200 == 0:
+                print('Training loss (for one batch) at step %s: %s' % (step, float(loss_value)))
+                print('Seen so far: %s samples' % ((step + 1) * int(args.batch_size)))
+            step += 1
+        train_acc = metric_fn.result()
+        print('Training acc over epoch: %s' % (float(train_acc),))
+        metric_fn.reset_states()
+
+        # # Run a validation loop at the end of each epoch.
+        # for x_batch_val, y_batch_val in val_dataset:
+        #     val_logits = model(x_batch_val)
+        #     # Update val metrics
+        #     val_acc_metric(y_batch_val, val_logits)
+        # val_acc = val_acc_metric.result()
+        # val_acc_metric.reset_states()
+        # print('Validation acc: %s' % (float(val_acc),))

@@ -91,5 +91,17 @@ def get_model(method, embeddings1, output_dim, max_seq_length, n_hidden, dropout
     return model
 
 
+def accuracy(predictions, possible_synsets, embeddings, true_preds):
+    choices = []
+    for i, sent in enumerate(predictions):
+        for j, word in enumerate(sent):
+            all_synsets = possible_synsets[i][j]
+            tiled_prediction = tf.tile(word, [len(all_synsets), 1])
+            similarities = keras.losses.cosine_similarity(possible_synsets,
+                                                          tiled_prediction,
+                                                          reduction=losses_utils.ReductionV2.NONE)
+            choices.append(tf.argmax(similarities))
+    accuracy = keras.metrics.accuracy(true_preds, choices)
+    return accuracy
 
 
