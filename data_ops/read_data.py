@@ -286,9 +286,12 @@ def read_data_uef(path, sensekey2synset, lemma2synsets, lemma2id={}, known_lemma
     # data = add_synset_ids(wsd_method, data, known_lemmas, synset2id)
     return data, lemma2id, known_lemmas, pos_types, synset2id
 
-def get_inputs(data, input2id, synset2id, input_format="lemma"):
+def get_ids(data, input2id, synset2id, input_format="lemma", max_length=100):
     input_ids, indices, gold_ids = [], [], []
     for sentence in data:
+        # IMPORTANT: With max_length = 100 about 50 sentences from SemCor are excluded from the dataset!
+        if len(sentence) > max_length:
+            continue
         current_sent, current_indices, current_gold_ids = [], [], []
         for i, word in enumerate(sentence):
             if input_format == "wordform":
@@ -296,51 +299,26 @@ def get_inputs(data, input2id, synset2id, input_format="lemma"):
             elif input_format == "lemma":
                 current_sent.append(input2id[word[1]] if word[1] in input2id else input2id["<UNK>"])
             if word[3][0] != "<NONE>":
-                # current_indices.append(i)
-                current_indices.append(True)
+                current_indices.append(1.0)
                 current_gold_ids.append([synset2id[synset] if synset in synset2id else synset2id["<UNK>"] for synset in word[3]])
             else:
-                current_indices.append(False)
+                current_indices.append(0.0)
+                current_gold_ids.append([synset2id["<UNK>"]])
         input_ids.append(current_sent)
         indices.append(current_indices)
         gold_ids.append(current_gold_ids)
-    # input_ids = numpy.asarray(input_ids)
-    # indices = numpy.asarray(indices)
-    # gold_ids = numpy.asarray(gold_ids)
+        data_len = len(input_ids)
     input_ids = tf.ragged.constant(input_ids, dtype="int32")
-    indices = tf.ragged.constant(indices, dtype="bool")
+    indices = tf.ragged.constant(indices, dtype="float32")
     gold_ids = tf.ragged.constant(gold_ids, dtype="int32")
-    return input_ids, indices, gold_ids
+    return input_ids, indices, gold_ids, data_len
 
-
-def get_inputs2(data, input2id, synset2id, embeddings, input_format="lemma"):
-    input_ids, indices, gold_ids = [], [], []
-    for i, word in enumerate(data):
-        if input_format == "wordform":
-            input_ids.append(input2id[word[0]] if word[0] in input2id else input2id["<UNK>"])
-        elif input_format == "lemma":
-            input_ids.append(input2id[word[1]] if word[1] in input2id else input2id["<UNK>"])
-        if word[3][0] != "<NONE>":
-            # indices.append(i)
-            indices.append(True)
-            gold_ids.append(get_embedding(word[3], embeddings, synset2id))
-        else:
-            indices.append(False)
-    # input_ids = numpy.asarray(input_ids)
-    # indices = numpy.asarray(indices)
-    # gold_ids = numpy.asarray(gold_ids)
-    input_ids = tf.ragged.constant(input_ids, dtype="int32")
-    indices = tf.ragged.constant(indices, dtype="bool")
-    gold_ids = tf.ragged.constant(gold_ids, dtype="int32")
-    return input_ids, indices, gold_ids
-
-def get_embedding(srcs, embeddings, src2id):
-    for i, src in enumerate(srcs):
-        if id in src2id:
-            if i == 1:
-                embedding = embeddings[src2id[src]]
-            else:
-                embedding += embeddings[src2id[src]]
-    return embedding / len(srcs)
+def get_sequence(x, data, indices, labels, embeddings):
+    sequence = tf.gather(data, x)
+    labels = tf.gather(labels, x)
+    labels = tf.gather(embeddings, labels)
+    labels = tf.reduce_mean(labels, 1)
+    indices = tf.gather(indices, x)
+    return (sequence, labels, indices)
 
 

@@ -43,54 +43,42 @@ class MetricLoggingLayer(keras.layers.Layer):
         outputs, golds, possibles = inputs
 
         value = []
+        """
+        algorithm for calculating the custom metric:
+        - reshape outputs to [batch, seq, 1, 300]
+        - tile outputs to [batch, seq, k, 300] where k is number of possible senses
+        - compute cosine_similarity with reduction=(tf.python.keras.utils.)losses_utils.ReductionV2.NONE
+        - get argmax at dim=2
+        - compare with labels represented as integers (pass them as inputs?)
+        """
         self.add_metric(value,
                         name='dictionary_based_accuracy',
                         aggregation='mean')
         return inputs  # Pass-through layer.
 
-def get_model(method, embeddings1, embeddings2, output_dim, vocab_size1, emb1_dim, vocab_size2, emb2_dim, max_seq_length,
-              n_hidden, dropout):
+def get_model(method, embeddings1, output_dim, max_seq_length, n_hidden, dropout):
     """Creates the NN model
 
     Args:
         method: A string, the kind of disambiguation performed by the model (classification, context embedding, etc.)
-        output_dim: An int, this is the size of the output layer, on which classification/regression is computed
-        vocab_size1: An int, the number of words in the primary vector space model (VSM)
-        emb1_dim: An int, the dimensionality of the vectors in the primary VSM
-        vocab_size2: An int, the number of words in the secondary VSM, if one is provided
-        emb2_dim: An int, the dimensionality of the vectors in the secondary VSM
+        embeddings1: A Tensor with the word embeddings
+        output_dim: An int, the size of the expected output
         max_seq_length: The maximum length of the data sequences (used in LSTM to save computational resources)
         n_hidden: An int, the size of the individual layers in the LSTMs
         dropout: A float, the probability of dropping the activity of a neuron (dropout)
     Return:
         model: tf.keras.Model()
     """
-    inputs1 = keras.Input(shape=(max_seq_length,), name='word_ids1')
-    # inputs2 = keras.Input(shape=(max_seq_length,), name='word_ids2')
-    # indices = keras.Input(shape=(None,), name="gold_indices", dtype="int32")
-    mask = keras.Input(shape=(None,), name="gold_indices", dtype="int32")
-    # possible_senses = keras.Input(shape=(None,), name="possible_senses", dtype="int32")
-    emb_layer = keras.layers.Embedding(vocab_size1, emb1_dim,
-                                       embeddings_initializer=keras.initializers.Constant(embeddings1),
-                                       trainable=False)
-    emb_inputs = emb_layer(inputs1)
-    # emb_possibles = emb_layer(possible_senses)
-    # if vocab_size2 > 0:
-    #     emb_layer2 = keras.layers.Embedding(vocab_size2, emb2_dim,
-    #                                         embeddings_initializer=keras.initializers.Constant(embeddings2),
-    #                                         trainable=False)(inputs2)
-    #     emb_layer = keras.layers.concatenate(emb_layer, emb_layer2)
-    bilstm = keras.layers.Bidirectional(keras.layers.LSTM(n_hidden))(emb_inputs)
-    dropout = keras.layers.Dropout(dropout)(bilstm)
-    outputs = keras.layers.Dense(output_dim, activation='relu')(dropout)
-    outputs = tf.boolean_mask(outputs, mask)
-    # outputs = tf.gather(outputs, indices)
+    inputs = keras.Input(shape=(max_seq_length,), name='Word_ids', dtype="int32")
+    emb_inputs = tf.gather(embeddings1, inputs)
+    bilstm = keras.layers.Bidirectional(keras.layers.LSTM(n_hidden, return_sequences=True),
+                                        name="BiLSTM",
+                                        merge_mode="concat")(emb_inputs)
+    dropout = keras.layers.Dropout(dropout, name="Dropout")(bilstm)
+    outputs = keras.layers.Dense(output_dim, activation='relu', name="Relu")(dropout)
     if method == "classification":
-        outputs = keras.layers.Dense(output_dim, activation='softmax')(outputs)
-        # outputs = keras.layers.Softmax(outputs)
-    # elif method == "context_embedding":
-    #     outputs = MetricLoggingLayer()([outputs, )
-    model = keras.Model(inputs1, mask, outputs)
+        outputs = keras.layers.Dense(output_dim, activation='softmax', name="Softmax")(outputs)
+    model = keras.Model(inputs=inputs, outputs=outputs)
     return model
 
 
