@@ -1,6 +1,7 @@
 import tensorflow as tf
 
 from tensorflow.python import keras
+from tensorflow.python.keras.utils import losses_utils
 
 class CosineSimilarityForAccuracy(keras.metrics.Metric):
 
@@ -37,21 +38,29 @@ class CosineSimilarityForAccuracy(keras.metrics.Metric):
         # The state of the metric will be reset at the start of each epoch.
         self.true_positives.assign(0.)
 
-class MetricLoggingLayer(keras.layers.Layer):
+class WSDAccuracyCosineSimilarity(keras.layers.Layer):
+    """
+    algorithm for calculating the custom metric:
+    - reshape outputs to [batch, seq, 1, 300]
+    - tile outputs to [batch, seq, k, 300] where k is number of possible senses
+    - compute cosine_similarity with reduction=(tf.python.keras.utils.)losses_utils.ReductionV2.NONE
+    - get argmax at dim=2
+    - compare with labels represented as integers (pass them as inputs?)
+    """
+    def accuracy(self, predictions, possible_synsets, max_synsets, true_preds, sample_weight):
+        shape = predictions.shape.dims.insert(1)
+        predictions = tf.reshape(predictions, shape)
+        predictions = tf.tile(predictions, [1, 1, max_synsets, 1])
+        similarities = keras.losses.cosine_similarity(possible_synsets,
+                                                      predictions,
+                                                      reduction=losses_utils.ReductionV2.NONE)
+        chosen_synsets = tf.argmax(similarities)
+        accuracy = keras.metrics.accuracy(true_preds, chosen_synsets, sample_weigth=sample_weight)
+        return accuracy
 
     def call(self, inputs):
         outputs, golds, possibles = inputs
-
-        value = []
-        """
-        algorithm for calculating the custom metric:
-        - reshape outputs to [batch, seq, 1, 300]
-        - tile outputs to [batch, seq, k, 300] where k is number of possible senses
-        - compute cosine_similarity with reduction=(tf.python.keras.utils.)losses_utils.ReductionV2.NONE
-        - get argmax at dim=2
-        - compare with labels represented as integers (pass them as inputs?)
-        """
-        self.add_metric(value,
+        self.add_metric(self.accuracy(inputs),
                         name='dictionary_based_accuracy',
                         aggregation='mean')
         return inputs  # Pass-through layer.
