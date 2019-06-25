@@ -76,7 +76,7 @@ def get_model(method, embeddings1, output_dim, max_seq_length, n_hidden, dropout
         n_hidden: An int, the size of the individual layers in the LSTMs
         dropout: A float, the probability of dropping the activity of a neuron (dropout)
     Return:
-        model: tf.keras.Model()
+        models: tf.keras.Model()
     """
     inputs = keras.Input(shape=(max_seq_length,), name='Word_ids', dtype="int32")
     emb_inputs = tf.gather(embeddings1, inputs)
@@ -91,17 +91,17 @@ def get_model(method, embeddings1, output_dim, max_seq_length, n_hidden, dropout
     return model
 
 
-def accuracy(predictions, possible_synsets, embeddings, true_preds):
+def accuracy(predictions, possible_synsets, embeddings, true_preds, metric):
     choices = []
-    for i, sent in enumerate(predictions):
-        for j, word in enumerate(sent):
-            all_synsets = possible_synsets[i][j]
-            tiled_prediction = tf.tile(word, [len(all_synsets), 1])
-            similarities = keras.losses.cosine_similarity(possible_synsets,
-                                                          tiled_prediction,
-                                                          reduction=losses_utils.ReductionV2.NONE)
+    for i, word in enumerate(predictions):
+            all_synsets = possible_synsets[i]
+            possible_golds = tf.gather(embeddings, all_synsets)
+            tiled_prediction = tf.tile(tf.reshape(word, [1, -1]), [len(all_synsets), 1])
+            similarities = keras.losses.CosineSimilarity(reduction=losses_utils.ReductionV2.NONE)(possible_golds,
+                                                                                                  tiled_prediction)
             choices.append(tf.argmax(similarities))
-    accuracy = keras.metrics.accuracy(true_preds, choices)
-    return accuracy
+    # accuracy = tf.metrics.Accuracy()
+    metric.update_state(true_preds, tf.stack(choices))
+    return metric.result().numpy()
 
 

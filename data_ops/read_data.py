@@ -10,7 +10,7 @@ import tensorflow as tf
 import globals
 
 
-def get_wordnet_lexicon(lexicon_path):
+def get_wordnet_lexicon(lexicon_path, src2id):
     """Reads the WordNet dictionary
 
     Args:
@@ -20,7 +20,7 @@ def get_wordnet_lexicon(lexicon_path):
         lemma2synsets: A dictionary, maps lemmas to synset IDs
 
     """
-    lemma2synsets = {}
+    lemma2synsets, lemma2synset_ids = {}, {}
     lexicon = open(lexicon_path, "r")
     max_synsets = 0
     for line in lexicon.readlines():
@@ -32,10 +32,13 @@ def get_wordnet_lexicon(lexicon_path):
             synset = entry[:10].strip()
             if lemma not in lemma2synsets:
                 lemma2synsets[lemma] = [synset]
+                lemma2synset_ids[lemma.encode('utf-8')] = [src2id[synset] if synset in src2id else src2id["<UNK>"]]
             else:
                 lemma2synsets[lemma].append(synset)
+                lemma2synset_ids[lemma.encode('utf-8')].append(src2id[synset] if synset in src2id else src2id["<UNK>"])
     lemma2synsets = collections.OrderedDict(sorted(lemma2synsets.items()))
-    return lemma2synsets, max_synsets
+    lemma2synset_ids = collections.OrderedDict(sorted(lemma2synset_ids.items()))
+    return lemma2synsets, lemma2synset_ids, max_synsets
 
 
 def get_lemma_synset_maps(wsd_method, lemma2synsets, known_lemmas, lemma2id, synset2id):
@@ -289,13 +292,13 @@ def read_data_uef(path, sensekey2synset, lemma2synsets, lemma2id={}, known_lemma
     # data = add_synset_ids(wsd_method, data, known_lemmas, synset2id)
     return data, lemma2id, known_lemmas, pos_types, synset2id
 
-def get_ids(data, input2id, synset2id, input_format="lemma", max_length=100):
-    input_ids, indices, gold_ids = [], [], []
+def get_ids(data, input2id, synset2id, lemma2synsets, input_format="lemma", max_length=100):
+    input_ids, input_lemmas, indices, gold_ids, gold_idxs = [], [], [], [], []
     for sentence in data:
         # IMPORTANT: With max_length = 100 about 50 sentences from SemCor are excluded from the dataset!
         if len(sentence) > max_length:
             continue
-        current_sent, current_indices, current_gold_ids = [], [], []
+        current_sent, current_lemmas, current_indices, current_gold_ids, current_gold_idxs = [], [], [], [], []
         for i, word in enumerate(sentence):
             if input_format == "wordform":
                 current_sent.append(input2id[word[0]] if word[0] in input2id else input2id["<UNK>"])
@@ -304,24 +307,34 @@ def get_ids(data, input2id, synset2id, input_format="lemma", max_length=100):
             if word[3][0] != "<NONE>":
                 current_indices.append(True)
                 current_gold_ids.append([synset2id[synset] if synset in synset2id else synset2id["<UNK>"] for synset in word[3]])
+                # taking only the first synset from the gold labels (not a problem for Sem/Senseval, but inaccurate for SemCor
+                current_gold_idxs.append(lemma2synsets[word[1]].index(word[3][0]))
             else:
                 current_indices.append(False)
                 current_gold_ids.append([synset2id["<UNK>"]])
+                current_gold_idxs.append(-1)
+            current_lemmas.append(word[1])
         input_ids.append(current_sent)
         indices.append(current_indices)
         gold_ids.append(current_gold_ids)
+        gold_idxs.append(current_gold_idxs)
+        input_lemmas.append(current_lemmas)
         data_len = len(input_ids)
     input_ids = tf.ragged.constant(input_ids, dtype="int32")
+    input_lemmas = tf.ragged.constant(input_lemmas, dtype="string")
     indices = tf.ragged.constant(indices, dtype="bool")
     gold_ids = tf.ragged.constant(gold_ids, dtype="int32")
-    return input_ids, indices, gold_ids, data_len
+    gold_idxs = tf.ragged.constant(gold_idxs, dtype="int32")
+    return input_ids, input_lemmas, indices, gold_ids, gold_idxs, data_len
 
-def get_sequence(x, data, indices, labels, embeddings):
+def get_sequence(x, data, lemmas, indices, gold_labels, gold_idxs, embeddings):
     sequence = tf.gather(data, x)
-    labels = tf.gather(labels, x)
+    lemmas = tf.gather(lemmas, x)
+    mask = tf.gather(indices, x)
+    labels = tf.gather(gold_labels, x)
     labels = tf.gather(embeddings, labels)
     labels = tf.reduce_mean(labels, 1)
-    mask = tf.gather(indices, x)
-    return ((sequence, mask), labels)
+    idxs = tf.gather(gold_idxs, x)
+    return ((sequence, lemmas, mask, idxs), labels)
 
 

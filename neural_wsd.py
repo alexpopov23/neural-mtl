@@ -5,7 +5,7 @@ import tensorflow as tf
 from tensorflow.python import keras
 from tensorflow.python.keras.optimizer_v2.adam import Adam
 
-import model
+import models
 from data_ops import read_data, load_embeddings
 
 
@@ -80,7 +80,9 @@ if __name__ == "__main__":
         embeddings2, emb2_src2id, emb2_id2src = [], None, None
     if args.train_data_format == "uef" or args.test_data_format == "uef":
         sensekey2synset = pickle.load(open(args.sensekey2synset_path, "rb"))
-    lemma2synsets, max_synsets = read_data.get_wordnet_lexicon(args.lexicon_path)
+    lemma2synsets, lemma2synset_ids, max_synsets = read_data.get_wordnet_lexicon(args.lexicon_path, emb1_src2id)
+    # lemma2synset_ids = {lemma: [emb1_src2id[synset] for synset in synsets] if synset in emb1_src2id else emb1_src2id["<UNK>"]
+    #                     for lemma, synsets in lemma2synsets.items() }
 
     # Read the data sets
     if args.train_data_format == "naf":
@@ -95,10 +97,12 @@ if __name__ == "__main__":
                                                                                            lemma2synsets,
                                                                                            for_training=True,
                                                                                            wsd_method=args.wsd_method)
-        train_input_ids, train_indices, train_gold_ids, train_len = read_data.get_ids(train_data,
-                                                                                      emb1_src2id,
-                                                                                      synset2id,
-                                                                                      args.embeddings1_input)
+        train_input_ids, train_input_lemmas, train_indices, train_gold_ids, train_gold_idxs, train_len = read_data.get_ids(
+            train_data,
+            emb1_src2id,
+            synset2id,
+            lemma2synsets,
+            args.embeddings1_input)
     if args.test_data_format == "naf":
         test_data, _, _, _, _ = read_data.read_data_naf(args.test_data_path,
                                                         lemma2synsets,
@@ -117,10 +121,11 @@ if __name__ == "__main__":
                                                         synset2id=synset2id,
                                                         for_training=False,
                                                         wsd_method=args.wsd_method)
-        test_input_ids, test_indices, test_gold_ids, test_len  = read_data.get_ids(test_data,
-                                                                                   emb1_src2id,
-                                                                                   synset2id,
-                                                                                   args.embeddings1_input)
+        test_input_ids, test_input_lemmas, test_indices, test_gold_ids, test_gold_idxs, test_len  = read_data.get_ids(test_data,
+                                                                                                      emb1_src2id,
+                                                                                                      synset2id,
+                                                                                                      lemma2synsets,
+                                                                                                      args.embeddings1_input)
     if args.dev_data_format == "naf":
         dev_data, _, _, _, _ = read_data.read_data_naf(args.dev_data_path,
                                                        lemma2synsets,
@@ -139,18 +144,45 @@ if __name__ == "__main__":
                                                        synset2id=synset2id,
                                                        for_training=False,
                                                        wsd_method=args.wsd_method)
-        dev_input_ids, dev_indices, dev_gold_ids, dev_len = read_data.get_ids(dev_data,
-                                                                              emb1_src2id,
-                                                                              synset2id,
-                                                                              args.embeddings1_input)
+        dev_input_ids, dev_input_lemmas, dev_indices, dev_gold_ids, dev_gold_idxs, dev_len = read_data.get_ids(dev_data,
+                                                                                                emb1_src2id,
+                                                                                                synset2id,
+                                                                                                lemma2synsets,
+                                                                                                args.embeddings1_input)
 
-    dataset = tf.data.Dataset.range(train_len)
-    dataset = dataset.map(lambda x: read_data.get_sequence(x, train_input_ids, train_indices, train_gold_ids, embeddings1))
-    dataset = dataset.shuffle(10000)
-    dataset = dataset.padded_batch(int(args.batch_size),
-                                   padded_shapes=( (    ( (int(args.max_seq_length)), (int(args.max_seq_length)) ),
-                                                        (int(args.max_seq_length), int(args.embeddings1_dim)) ) ),
-                                   padding_values=( (0, False), 0.0) )
+    train_dataset = tf.data.Dataset.range(train_len)
+    train_dataset = train_dataset.map(lambda x: read_data.get_sequence(x,
+                                                                       train_input_ids,
+                                                                       train_input_lemmas,
+                                                                       train_indices,
+                                                                       train_gold_ids,
+                                                                       train_gold_idxs,
+                                                                       embeddings1))
+    train_dataset = train_dataset.shuffle(10000)
+    train_dataset = train_dataset.padded_batch(int(args.batch_size),
+                                               padded_shapes=( (    ( (int(args.max_seq_length)),
+                                                                      (int(args.max_seq_length)),
+                                                                      (int(args.max_seq_length)),
+                                                                      (int(args.max_seq_length))),
+                                                                    (int(args.max_seq_length), int(args.embeddings1_dim)) ) ),
+                                               padding_values=( (0, "<PAD>", False, -1), 0.0) )
+
+    dev_dataset = tf.data.Dataset.range(train_len)
+    dev_dataset = dev_dataset.map(lambda x: read_data.get_sequence(x,
+                                                                   dev_input_ids,
+                                                                   dev_input_lemmas,
+                                                                   dev_indices,
+                                                                   dev_gold_ids,
+                                                                   dev_gold_idxs,
+                                                                   embeddings1))
+    dev_dataset = dev_dataset.shuffle(10000)
+    dev_dataset = dev_dataset.padded_batch(int(args.batch_size),
+                                               padded_shapes=( (    ( (int(args.max_seq_length)),
+                                                                      (int(args.max_seq_length)),
+                                                                      (int(args.max_seq_length)),
+                                                                      (int(args.max_seq_length))),
+                                                                    (int(args.max_seq_length), int(args.embeddings1_dim)) ) ),
+                                               padding_values=( (0, "<PAD>", False, -1), 0.0) )
 
     # Create the model architecture
     if args.wsd_method == "classification":
@@ -161,7 +193,7 @@ if __name__ == "__main__":
         output_dim = int(args.embeddings1_dim)
         loss = "mse"
         metrics = [keras.losses.CosineSimilarity()] # which axis should be used ???
-    model = model.get_model(args.wsd_method,
+    model = models.get_model(args.wsd_method,
                             embeddings1,
                             output_dim,
                             int(args.max_seq_length),
@@ -175,34 +207,53 @@ if __name__ == "__main__":
     # model.fit(dataset, epochs=2)
 
     # optimizer = keras.optimizers.Adam()
+    tf.strings.unicode_transcode
     optimizer = Adam()
     loss_fn = keras.losses.MeanSquaredError()
-    metric_fn = keras.metrics.CosineSimilarity()
+    train_metric, val_metric = keras.metrics.CosineSimilarity(), keras.metrics.CosineSimilarity()
+    train_accuracy, val_accuracy = tf.metrics.Accuracy(), tf.metrics.Accuracy()
     for epoch in range(3):
         print('Start of epoch %d' % (epoch,))
         step = 0
-        for (x_batch_train, mask), y_batch_train in dataset.__iter__():
+        for (x_batch_train, x_batch_lemmas, mask, true_idxs), y_batch_train in train_dataset.__iter__():
             with tf.GradientTape() as tape:
+                lemmas = tf.boolean_mask(x_batch_lemmas, mask)
+                possible_synsets = [lemma2synset_ids[lemma.numpy()] for lemma in lemmas]
                 outputs = model(x_batch_train)
                 outputs = tf.boolean_mask(outputs, mask)
                 true_preds = tf.boolean_mask(y_batch_train, mask)
                 loss_value = loss_fn(true_preds, outputs)
+                train_metric(true_preds, outputs)
+                if step % 50 == 0:
+                    true_idxs = tf.boolean_mask(true_idxs, mask)
+                    accuracy = models.accuracy(outputs, possible_synsets, embeddings1, true_idxs, train_accuracy)
+                    train_accuracy.reset_states()
             grads = tape.gradient(loss_value, model.trainable_weights)
             optimizer.apply_gradients(zip(grads, model.trainable_weights))
-            metric_value = metric_fn(true_preds, outputs)
-            if step % 200 == 0:
+            if step % 50 == 0:
                 print('Training loss (for one batch) at step %s: %s' % (step, float(loss_value)))
+                print('Accuracy on last batch is: %s' % (accuracy))
                 print('Seen so far: %s samples' % ((step + 1) * int(args.batch_size)))
             step += 1
-        train_acc = metric_fn.result()
-        print('Training acc over epoch: %s' % (float(train_acc),))
-        metric_fn.reset_states()
+        cosine_sim = train_metric.result()
+        print('Cosine similarity for the iteration is: %s' % (float(cosine_sim)))
+        train_metric.reset_states()
 
-        # # Run a validation loop at the end of each epoch.
-        # for x_batch_val, y_batch_val in val_dataset:
-        #     val_logits = model(x_batch_val)
-        #     # Update val metrics
-        #     val_acc_metric(y_batch_val, val_logits)
-        # val_acc = val_acc_metric.result()
-        # val_acc_metric.reset_states()
-        # print('Validation acc: %s' % (float(val_acc),))
+        # Run a validation loop at the end of each epoch.
+        for (x_batch_dev, x_batch_lemmas, mask, true_idxs), y_batch_dev in dev_dataset.__iter__():
+            lemmas = tf.boolean_mask(x_batch_lemmas, mask)
+            possible_synsets = [lemma2synset_ids[lemma.numpy()] for lemma in lemmas]
+            outputs = model(x_batch_dev)
+            outputs = tf.boolean_mask(outputs, mask)
+            true_preds = tf.boolean_mask(y_batch_dev, mask)
+            loss_value = loss_fn(true_preds, outputs)
+            val_metric(true_preds, outputs)
+            true_idxs = tf.boolean_mask(true_idxs, mask)
+            accuracy = models.accuracy(outputs, possible_synsets, embeddings1, true_idxs, val_accuracy)
+            val_metric(true_preds, outputs)
+        val_cosine_sim = val_metric.result()
+        val_metric.reset_states()
+        val_acc = val_accuracy.result()
+        val_accuracy.reset_states()
+        print('Validation cosine similarity metric: %s' % (float(val_cosine_sim),))
+        print('Validation accuracy: %s' % (float(val_acc),))
