@@ -167,7 +167,7 @@ if __name__ == "__main__":
                                                                     (int(args.max_seq_length), int(args.embeddings1_dim)) ) ),
                                                padding_values=( (0, "<PAD>", False, -1), 0.0) )
 
-    dev_dataset = tf.data.Dataset.range(train_len)
+    dev_dataset = tf.data.Dataset.range(dev_len)
     dev_dataset = dev_dataset.map(lambda x: read_data.get_sequence(x,
                                                                    dev_input_ids,
                                                                    dev_input_lemmas,
