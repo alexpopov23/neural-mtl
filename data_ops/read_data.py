@@ -285,12 +285,11 @@ def read_data_uef(path, sensekey2synset, lemma2synsets, lemma2id={}, known_lemma
                     current_sentence.append([wordform, lemma, pos, synsets])
                 data.append(current_sentence)
     if for_training is True:
-        lemma2id, synset2id = get_lemma_synset_maps(wsd_method, lemma2synsets, known_lemmas, lemma2id,
-                                                                    synset2id)
+        lemma2id, synset2id = get_lemma_synset_maps(wsd_method, lemma2synsets, known_lemmas, lemma2id, synset2id)
     # data = add_synset_ids(wsd_method, data, known_lemmas, synset2id)
     return data, lemma2id, known_lemmas, pos_types, synset2id
 
-def get_ids(data, input2id, synset2id, lemma2synsets, input_format="lemma", max_length=100):
+def get_ids(data, input2id, synset2id, lemma2synsets, input_format="lemma", method="context_embedding", max_length=100):
     """Converts the string data to numerical IDs per word, to be passed to the model during training/evaluation.
 
     Args:
@@ -322,12 +321,15 @@ def get_ids(data, input2id, synset2id, lemma2synsets, input_format="lemma", max_
                 current_sent.append(input2id[word[1]] if word[1] in input2id else input2id["<UNK>"])
             if word[3][0] != "<NONE>":
                 current_mask.append(True)
-                current_gold_ids.append([synset2id[synset] if synset in synset2id else synset2id["<UNK>"] for synset in word[3]])
+                if method == "classification":
+                    current_gold_ids.append([input2id[synset] if synset in input2id else input2id["<UNK>"] for synset in word[3]])
+                elif method == "context_embedding":
+                    current_gold_ids.append([synset2id[synset] if synset in synset2id else synset2id["<UNK>"] for synset in word[3]])
                 # taking only the first synset from the gold labels (not a problem for Sem/Senseval, but inaccurate for SemCor
                 current_gold_idxs.append(lemma2synsets[word[1]].index(word[3][0]))
             else:
                 current_mask.append(False)
-                current_gold_ids.append([synset2id["<UNK>"]])
+                current_gold_ids.append([0]) # '<UNK>' in both cases
                 current_gold_idxs.append(-1)
             current_lemmas.append(word[1])
         input_ids.append(current_sent)
@@ -343,7 +345,7 @@ def get_ids(data, input2id, synset2id, lemma2synsets, input_format="lemma", max_
     gold_idxs = tf.ragged.constant(gold_idxs, dtype="int32")
     return input_ids, input_lemmas, indices, gold_ids, gold_idxs, data_len
 
-def get_sequence(x, data, lemmas, mask, gold_labels, gold_idxs, embeddings):
+def get_sequence(x, data, lemmas, mask, gold_labels, gold_idxs, embeddings, output_size, method):
     """Retrieves one training/evaluation batch, to be passed to the model.
 
     Args:
@@ -362,8 +364,12 @@ def get_sequence(x, data, lemmas, mask, gold_labels, gold_idxs, embeddings):
     lemmas = tf.gather(lemmas, x)
     mask = tf.gather(mask, x)
     labels = tf.gather(gold_labels, x)
-    labels = tf.gather(embeddings, labels)
-    labels = tf.reduce_mean(labels, 1)
+    #TODO add option for one-hot embedding
+    if method == "classification":
+        labels = tf.one_hot(labels, output_size)
+    elif method == "context_embedding":
+        labels = tf.gather(embeddings, labels)
+        labels = tf.reduce_mean(labels, 1)
     idxs = tf.gather(gold_idxs, x)
     return ((sequence, lemmas, mask, idxs), labels)
 

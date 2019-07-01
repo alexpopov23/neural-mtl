@@ -102,7 +102,8 @@ if __name__ == "__main__":
             emb1_src2id,
             synset2id,
             lemma2synsets,
-            args.embeddings1_input)
+            args.embeddings1_input,
+            args.wsd_method)
     if args.test_data_format == "naf":
         test_data, _, _, _, _ = read_data.read_data_naf(args.test_data_path,
                                                         lemma2synsets,
@@ -121,11 +122,13 @@ if __name__ == "__main__":
                                                         synset2id=synset2id,
                                                         for_training=False,
                                                         wsd_method=args.wsd_method)
-        test_input_ids, test_input_lemmas, test_indices, test_gold_ids, test_gold_idxs, test_len  = read_data.get_ids(test_data,
-                                                                                                      emb1_src2id,
-                                                                                                      synset2id,
-                                                                                                      lemma2synsets,
-                                                                                                      args.embeddings1_input)
+        test_input_ids, test_input_lemmas, test_indices, test_gold_ids, test_gold_idxs, test_len  = \
+            read_data.get_ids(test_data,
+                              emb1_src2id,
+                              synset2id,
+                              lemma2synsets,
+                              args.embeddings1_input,
+                              args.wsd_method)
     if args.dev_data_format == "naf":
         dev_data, _, _, _, _ = read_data.read_data_naf(args.dev_data_path,
                                                        lemma2synsets,
@@ -144,11 +147,13 @@ if __name__ == "__main__":
                                                        synset2id=synset2id,
                                                        for_training=False,
                                                        wsd_method=args.wsd_method)
-        dev_input_ids, dev_input_lemmas, dev_indices, dev_gold_ids, dev_gold_idxs, dev_len = read_data.get_ids(dev_data,
-                                                                                                emb1_src2id,
-                                                                                                synset2id,
-                                                                                                lemma2synsets,
-                                                                                                args.embeddings1_input)
+        dev_input_ids, dev_input_lemmas, dev_indices, dev_gold_ids, dev_gold_idxs, dev_len = \
+            read_data.get_ids(dev_data,
+                              emb1_src2id,
+                              synset2id,
+                              lemma2synsets,
+                              args.embeddings1_input,
+                              args.wsd_method)
 
     train_dataset = tf.data.Dataset.range(train_len)
     train_dataset = train_dataset.map(lambda x: read_data.get_sequence(x,
@@ -187,12 +192,8 @@ if __name__ == "__main__":
     # Create the model architecture
     if args.wsd_method == "classification":
         output_dim = len(synset2id)
-        loss = "categorical_crossentropy"
-        metrics = ["accuracy"]
     elif args.wsd_method == "context_embedding":
         output_dim = int(args.embeddings1_dim)
-        loss = "mse"
-        metrics = [keras.losses.CosineSimilarity()] # which axis should be used ???
     model = models.get_model(args.wsd_method,
                             embeddings1,
                             output_dim,
@@ -200,10 +201,16 @@ if __name__ == "__main__":
                             int(args.n_hidden),
                             float(args.dropout))
     model.summary()
-    tf.strings.unicode_transcode
     optimizer = Adam()
-    loss_fn = keras.losses.MeanSquaredError()
-    train_metric, val_metric = keras.metrics.CosineSimilarity(), keras.metrics.CosineSimilarity()
+    if args.wsd_method == "classification":
+        loss_fn = keras.losses.CategoricalCrossentropy()
+        loss_acc = None
+        train_metric, val_metric = keras.metrics.CategoricalCrossentropy(), keras.metrics.CategoricalCrossentropy()
+    elif args.wsd_method == "context_embedding":
+        loss_fn = keras.losses.MeanSquaredError()
+        loss_acc = keras.losses.CosineSimilarity()
+        train_metric, val_metric = keras.metrics.CosineSimilarity(), keras.metrics.CosineSimilarity()
+    # train_metric, val_metric = keras.metrics.CosineSimilarity(), keras.metrics.CosineSimilarity()
     train_accuracy, val_accuracy = tf.metrics.Accuracy(), tf.metrics.Accuracy()
     for epoch in range(3):
         print('Start of epoch %d' % (epoch,))

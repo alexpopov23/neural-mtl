@@ -29,7 +29,7 @@ def get_model(method, embeddings, output_dim, max_seq_length, n_hidden, dropout)
     return model
 
 
-def accuracy(predictions, possible_synsets, embeddings, true_preds, metric):
+def accuracy(predictions, possible_synsets, embeddings, true_preds, loss, metric):
     """Calculates accuracy of a model run
 
     Args:
