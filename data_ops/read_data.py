@@ -2,7 +2,6 @@ import collections
 import os
 
 import _elementtree
-import numpy
 import xml.etree.ElementTree as ET
 
 import tensorflow as tf
@@ -243,7 +242,6 @@ def read_data_uef(path, sensekey2synset, lemma2synsets, lemma2id={}, known_lemma
         known_lemmas: A set, all lemmas seen in training
         pos_types: A dictionary, all POS tags seen in training and their mappings to integer IDs
         synset2id: A dictionary, mapping synsets to integer IDs
-
     """
     data = []
     pos_types, pos_count = {}, 0
@@ -293,44 +291,76 @@ def read_data_uef(path, sensekey2synset, lemma2synsets, lemma2id={}, known_lemma
     return data, lemma2id, known_lemmas, pos_types, synset2id
 
 def get_ids(data, input2id, synset2id, lemma2synsets, input_format="lemma", max_length=100):
-    input_ids, input_lemmas, indices, gold_ids, gold_idxs = [], [], [], [], []
+    """Converts the string data to numerical IDs per word, to be passed to the model during training/evaluation.
+
+    Args:
+        data: A list; sentence lists of words, where each one is represented as [wordform, lemma, POS, [synsets]]
+        input2id: A dictionary; maps input string to embedding ID
+        synset2id: A dictionary; maps synsets to integer IDs in the embeddings
+        lemma2synsets: A dictionary; retrieves the synsets associated with a lemma
+        input_format: A string; denotes the kind of input to be read off the data (lemma or wordform)
+        max_length: An int; the maximum length of the sentences to be analyzed
+
+    Returns:
+        input_ids: A RaggedTensor of ints; the IDs for the input strings
+        input_lemmas: A RaggedTensor of strings; the lemmas of the disambiguated words per sentence
+        mask: A boolean RaggedTensor; masks the inputs that are not to be disambiguated
+        gold_ids: A RaggedTensor with the gold synset IDs (words no to be disambiguated are marked with 0)
+        gold_idxs: A RaggedTensor of ints; the ints are the positions of the synsets in the lexicon (1st,..,Nth)
+        data_len: An int; the length of the dataset
+    """
+    input_ids, input_lemmas, mask, gold_ids, gold_idxs = [], [], [], [], []
     for sentence in data:
         # IMPORTANT: With max_length = 100 about 50 sentences from SemCor are excluded from the dataset!
         if len(sentence) > max_length:
             continue
-        current_sent, current_lemmas, current_indices, current_gold_ids, current_gold_idxs = [], [], [], [], []
+        current_sent, current_lemmas, current_mask, current_gold_ids, current_gold_idxs = [], [], [], [], []
         for i, word in enumerate(sentence):
             if input_format == "wordform":
                 current_sent.append(input2id[word[0]] if word[0] in input2id else input2id["<UNK>"])
             elif input_format == "lemma":
                 current_sent.append(input2id[word[1]] if word[1] in input2id else input2id["<UNK>"])
             if word[3][0] != "<NONE>":
-                current_indices.append(True)
+                current_mask.append(True)
                 current_gold_ids.append([synset2id[synset] if synset in synset2id else synset2id["<UNK>"] for synset in word[3]])
                 # taking only the first synset from the gold labels (not a problem for Sem/Senseval, but inaccurate for SemCor
                 current_gold_idxs.append(lemma2synsets[word[1]].index(word[3][0]))
             else:
-                current_indices.append(False)
+                current_mask.append(False)
                 current_gold_ids.append([synset2id["<UNK>"]])
                 current_gold_idxs.append(-1)
             current_lemmas.append(word[1])
         input_ids.append(current_sent)
-        indices.append(current_indices)
+        mask.append(current_mask)
         gold_ids.append(current_gold_ids)
         gold_idxs.append(current_gold_idxs)
         input_lemmas.append(current_lemmas)
         data_len = len(input_ids)
     input_ids = tf.ragged.constant(input_ids, dtype="int32")
     input_lemmas = tf.ragged.constant(input_lemmas, dtype="string")
-    indices = tf.ragged.constant(indices, dtype="bool")
+    indices = tf.ragged.constant(mask, dtype="bool")
     gold_ids = tf.ragged.constant(gold_ids, dtype="int32")
     gold_idxs = tf.ragged.constant(gold_idxs, dtype="int32")
     return input_ids, input_lemmas, indices, gold_ids, gold_idxs, data_len
 
-def get_sequence(x, data, lemmas, indices, gold_labels, gold_idxs, embeddings):
+def get_sequence(x, data, lemmas, mask, gold_labels, gold_idxs, embeddings):
+    """Retrieves one training/evaluation batch, to be passed to the model.
+
+    Args:
+        x: A tensor scalar; index into the slice of data to be retrieved in the construction of a particular data sample
+        data: A RaggedTensor; the input IDs
+        lemmas: A RaggedTensor; the input lemmas (per word present in the lexicon)
+        mask: A RaggedTensor; a boolean mask to filter out the words not to be disambiguated
+        gold_labels: A RaggedTensor; the gold synset IDs
+        gold_idxs: A RaggedTensor; the positions of the gold synsets in the lemma-synsets pairings in the lexicon
+        embeddings: A Tensor; the embeddings used by the model
+
+    Returns:
+        ((sequence, lemmas, mask, idxs), labels): A nested structure of tensors; to be consumed by the Dataset object
+    """
     sequence = tf.gather(data, x)
     lemmas = tf.gather(lemmas, x)
-    mask = tf.gather(indices, x)
+    mask = tf.gather(mask, x)
     labels = tf.gather(gold_labels, x)
     labels = tf.gather(embeddings, labels)
     labels = tf.reduce_mean(labels, 1)

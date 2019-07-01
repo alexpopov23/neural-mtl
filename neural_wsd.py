@@ -200,13 +200,6 @@ if __name__ == "__main__":
                             int(args.n_hidden),
                             float(args.dropout))
     model.summary()
-    # model.compile(optimizer=keras.optimizers.Adam(),
-    #               loss=loss,
-    #               metrics=metrics,
-    #               sample_weight_mode="temporal")
-    # model.fit(dataset, epochs=2)
-
-    # optimizer = keras.optimizers.Adam()
     tf.strings.unicode_transcode
     optimizer = Adam()
     loss_fn = keras.losses.MeanSquaredError()
