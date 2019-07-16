@@ -23,13 +23,15 @@ def get_model(method, embeddings, output_dim, max_seq_length, n_hidden, dropout)
                                         merge_mode="concat")(emb_inputs)
     dropout = keras.layers.Dropout(dropout, name="Dropout")(bilstm)
     outputs = keras.layers.Dense(output_dim, activation='relu', name="Relu")(dropout)
+    # outputs = keras.layers.Dense(output_dim, activation='linear', name="LinearLayer")(dropout)
     if method == "classification":
-        outputs = keras.layers.Dense(output_dim, activation='softmax', name="Softmax")(outputs)
+        # outputs = keras.layers.Dense(output_dim, activation='softmax', name="Softmax")(outputs)
+        outputs = keras.layers.Activation('softmax')(outputs)
     model = keras.Model(inputs=inputs, outputs=outputs)
     return model
 
 
-def accuracy(predictions, possible_synsets, embeddings, true_preds, loss, metric):
+def accuracy(predictions, possible_synsets, embeddings, true_preds, metric, method):
     """Calculates accuracy of a model run
 
     Args:
@@ -44,11 +46,15 @@ def accuracy(predictions, possible_synsets, embeddings, true_preds, loss, metric
     choices = []
     for i, word in enumerate(predictions):
             all_synsets = possible_synsets[i]
-            possible_golds = tf.gather(embeddings, all_synsets)
-            tiled_prediction = tf.tile(tf.reshape(word, [1, -1]), [len(all_synsets), 1])
-            similarities = keras.losses.CosineSimilarity(reduction=losses_utils.ReductionV2.NONE)(possible_golds,
-                                                                                                  tiled_prediction)
-            choices.append(tf.argmax(similarities))
+            if method == "classification":
+                activations = tf.gather(word, all_synsets)
+                choices.append(tf.argmax(activations))
+            elif method == "context_embedding":
+                possible_golds = tf.gather(embeddings, all_synsets)
+                tiled_prediction = tf.tile(tf.reshape(word, [1, -1]), [len(all_synsets), 1])
+                similarities = keras.losses.CosineSimilarity(reduction=losses_utils.ReductionV2.NONE)(possible_golds,
+                                                                                                      tiled_prediction)
+                choices.append(tf.argmax(similarities))
     metric.update_state(true_preds, tf.stack(choices))
     return metric.result().numpy()
 

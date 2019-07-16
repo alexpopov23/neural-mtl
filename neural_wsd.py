@@ -1,5 +1,6 @@
 import argparse
 import pickle
+import sys
 
 import tensorflow as tf
 from tensorflow.python import keras
@@ -51,6 +52,8 @@ if __name__ == "__main__":
                         help='Size of the hidden layer.')
     parser.add_argument('-n_hidden_layers', dest='n_hidden_layers', required=False, default=1,
                         help='Number of the hidden LSTMs in the forward/backward modules.')
+    parser.add_argument('-pos_filter', dest='pos_filter', required=False, default="False",
+                        help='Whether to use POS information to filter out irrelevant synsets.')
     parser.add_argument('-pos_tagset', dest='pos_tagset', required=False, default="coarsegrained",
                         help='Whether the POS tags should be converted. Options are: coarsegrained, finegrained.')
     parser.add_argument('-save_path', dest='save_path', required=False,
@@ -80,7 +83,9 @@ if __name__ == "__main__":
         embeddings2, emb2_src2id, emb2_id2src = [], None, None
     if args.train_data_format == "uef" or args.test_data_format == "uef":
         sensekey2synset = pickle.load(open(args.sensekey2synset_path, "rb"))
-    lemma2synsets, lemma2synset_ids, max_synsets = read_data.get_wordnet_lexicon(args.lexicon_path, emb1_src2id)
+    lemma2synsets, lemma2synset_ids, max_synsets = read_data.get_wordnet_lexicon(args.lexicon_path,
+                                                                                 emb1_src2id,
+                                                                                 pos_filter=args.pos_filter)
     # lemma2synset_ids = {lemma: [emb1_src2id[synset] for synset in synsets] if synset in emb1_src2id else emb1_src2id["<UNK>"]
     #                     for lemma, synsets in lemma2synsets.items() }
 
@@ -96,14 +101,16 @@ if __name__ == "__main__":
                                                                                            sensekey2synset,
                                                                                            lemma2synsets,
                                                                                            for_training=True,
-                                                                                           wsd_method=args.wsd_method)
+                                                                                           wsd_method=args.wsd_method,
+                                                                                           pos_filter=args.pos_filter)
         train_input_ids, train_input_lemmas, train_indices, train_gold_ids, train_gold_idxs, train_len = read_data.get_ids(
             train_data,
             emb1_src2id,
             synset2id,
             lemma2synsets,
-            args.embeddings1_input,
-            args.wsd_method)
+            input_format=args.embeddings1_input,
+            method=args.wsd_method,
+            pos_filter=args.pos_filter)
     if args.test_data_format == "naf":
         test_data, _, _, _, _ = read_data.read_data_naf(args.test_data_path,
                                                         lemma2synsets,
@@ -121,14 +128,16 @@ if __name__ == "__main__":
                                                         known_lemmas=known_lemmas,
                                                         synset2id=synset2id,
                                                         for_training=False,
-                                                        wsd_method=args.wsd_method)
+                                                        wsd_method=args.wsd_method,
+                                                        pos_filter=args.pos_filter)
         test_input_ids, test_input_lemmas, test_indices, test_gold_ids, test_gold_idxs, test_len  = \
             read_data.get_ids(test_data,
                               emb1_src2id,
                               synset2id,
                               lemma2synsets,
-                              args.embeddings1_input,
-                              args.wsd_method)
+                              input_format=args.embeddings1_input,
+                              method=args.wsd_method,
+                              pos_filter=args.pos_filter)
     if args.dev_data_format == "naf":
         dev_data, _, _, _, _ = read_data.read_data_naf(args.dev_data_path,
                                                        lemma2synsets,
@@ -146,15 +155,39 @@ if __name__ == "__main__":
                                                        known_lemmas=known_lemmas,
                                                        synset2id=synset2id,
                                                        for_training=False,
-                                                       wsd_method=args.wsd_method)
+                                                       wsd_method=args.wsd_method,
+                                                       pos_filter=args.pos_filter)
         dev_input_ids, dev_input_lemmas, dev_indices, dev_gold_ids, dev_gold_idxs, dev_len = \
             read_data.get_ids(dev_data,
                               emb1_src2id,
                               synset2id,
                               lemma2synsets,
-                              args.embeddings1_input,
-                              args.wsd_method)
+                              input_format=args.embeddings1_input,
+                              method=args.wsd_method,
+                              pos_filter=args.pos_filter)
 
+    # Create the Dataset objects and configure them
+    if args.wsd_method == "classification":
+        output_dim = len(synset2id)
+    elif args.wsd_method == "context_embedding":
+        output_dim = int(args.embeddings1_dim)
+    elif args.wsd_method == "multitask":
+        output_dim = (len(synset2id), int(args.wsd_method))
+    max_seq_length = int(args.max_seq_length)
+    if args.wsd_method == "multitask":
+        padded_shapes = ((((max_seq_length),
+                           (max_seq_length),
+                           (max_seq_length),
+                           (max_seq_length)),
+                          ((max_seq_length, output_dim[0]), (max_seq_length, output_dim[1]))))
+        padding_values = ((0, "<PAD>", False, -1), 0.0)
+    else:
+        padded_shapes = ( ( ( (max_seq_length),
+                              (max_seq_length),
+                              (max_seq_length),
+                              (max_seq_length) ),
+                            (max_seq_length, output_dim) ) )
+        padding_values = ((0, "<PAD>", False, -1), 0.0)
     train_dataset = tf.data.Dataset.range(train_len)
     train_dataset = train_dataset.map(lambda x: read_data.get_sequence(x,
                                                                        train_input_ids,
@@ -162,15 +195,13 @@ if __name__ == "__main__":
                                                                        train_indices,
                                                                        train_gold_ids,
                                                                        train_gold_idxs,
-                                                                       embeddings1))
+                                                                       embeddings1,
+                                                                       output_dim,
+                                                                       args.wsd_method))
     train_dataset = train_dataset.shuffle(10000)
     train_dataset = train_dataset.padded_batch(int(args.batch_size),
-                                               padded_shapes=( (    ( (int(args.max_seq_length)),
-                                                                      (int(args.max_seq_length)),
-                                                                      (int(args.max_seq_length)),
-                                                                      (int(args.max_seq_length))),
-                                                                    (int(args.max_seq_length), int(args.embeddings1_dim)) ) ),
-                                               padding_values=( (0, "<PAD>", False, -1), 0.0) )
+                                               padded_shapes=padded_shapes,
+                                               padding_values=padding_values)
 
     dev_dataset = tf.data.Dataset.range(dev_len)
     dev_dataset = dev_dataset.map(lambda x: read_data.get_sequence(x,
@@ -179,21 +210,15 @@ if __name__ == "__main__":
                                                                    dev_indices,
                                                                    dev_gold_ids,
                                                                    dev_gold_idxs,
-                                                                   embeddings1))
+                                                                   embeddings1,
+                                                                   output_dim,
+                                                                   args.wsd_method))
     dev_dataset = dev_dataset.shuffle(10000)
     dev_dataset = dev_dataset.padded_batch(int(args.batch_size),
-                                               padded_shapes=( (    ( (int(args.max_seq_length)),
-                                                                      (int(args.max_seq_length)),
-                                                                      (int(args.max_seq_length)),
-                                                                      (int(args.max_seq_length))),
-                                                                    (int(args.max_seq_length), int(args.embeddings1_dim)) ) ),
-                                               padding_values=( (0, "<PAD>", False, -1), 0.0) )
+                                               padded_shapes=padded_shapes,
+                                               padding_values=padding_values)
 
     # Create the model architecture
-    if args.wsd_method == "classification":
-        output_dim = len(synset2id)
-    elif args.wsd_method == "context_embedding":
-        output_dim = int(args.embeddings1_dim)
     model = models.get_model(args.wsd_method,
                             embeddings1,
                             output_dim,
@@ -218,7 +243,11 @@ if __name__ == "__main__":
         for (x_batch_train, x_batch_lemmas, mask, true_idxs), y_batch_train in train_dataset.__iter__():
             with tf.GradientTape() as tape:
                 lemmas = tf.boolean_mask(x_batch_lemmas, mask)
-                possible_synsets = [lemma2synset_ids[lemma.numpy()] for lemma in lemmas]
+                if args.wsd_method == "classification":
+                    possible_synsets = [[synset2id[syn] for syn in lemma2synsets[lemma.numpy().decode("utf-8")]]
+                                        for lemma in lemmas]
+                elif args.wsd_method == "context_embedding":
+                    possible_synsets = [lemma2synset_ids[lemma.numpy()] for lemma in lemmas]
                 outputs = model(x_batch_train)
                 outputs = tf.boolean_mask(outputs, mask)
                 true_preds = tf.boolean_mask(y_batch_train, mask)
@@ -226,7 +255,8 @@ if __name__ == "__main__":
                 train_metric(true_preds, outputs)
                 if step % 50 == 0:
                     true_idxs = tf.boolean_mask(true_idxs, mask)
-                    accuracy = models.accuracy(outputs, possible_synsets, embeddings1, true_idxs, train_accuracy)
+                    accuracy = models.accuracy(outputs, possible_synsets, embeddings1, true_idxs, train_accuracy,
+                                               args.wsd_method)
                     train_accuracy.reset_states()
             grads = tape.gradient(loss_value, model.trainable_weights)
             optimizer.apply_gradients(zip(grads, model.trainable_weights))
@@ -242,15 +272,20 @@ if __name__ == "__main__":
         # Run a validation loop at the end of each epoch.
         for (x_batch_dev, x_batch_lemmas, mask, true_idxs), y_batch_dev in dev_dataset.__iter__():
             lemmas = tf.boolean_mask(x_batch_lemmas, mask)
-            possible_synsets = [lemma2synset_ids[lemma.numpy()] for lemma in lemmas]
+            if args.wsd_method == "classification":
+                possible_synsets = [[synset2id[syn] if syn in synset2id else synset2id["<UNK>"]
+                                     for syn in lemma2synsets[lemma.numpy().decode("utf-8")]]
+                                    for lemma in lemmas]
+            elif args.wsd_method == "context_embedding":
+                possible_synsets = [lemma2synset_ids[lemma.numpy()] for lemma in lemmas]
             outputs = model(x_batch_dev)
             outputs = tf.boolean_mask(outputs, mask)
             true_preds = tf.boolean_mask(y_batch_dev, mask)
             loss_value = loss_fn(true_preds, outputs)
             val_metric(true_preds, outputs)
             true_idxs = tf.boolean_mask(true_idxs, mask)
-            accuracy = models.accuracy(outputs, possible_synsets, embeddings1, true_idxs, val_accuracy)
-            val_metric(true_preds, outputs)
+            accuracy = models.accuracy(outputs, possible_synsets, embeddings1, true_idxs, val_accuracy, args.wsd_method)
+            # val_metric(true_preds, outputs)
         val_cosine_sim = val_metric.result()
         val_metric.reset_states()
         val_acc = val_accuracy.result()

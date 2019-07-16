@@ -9,7 +9,7 @@ import tensorflow as tf
 import globals
 
 
-def get_wordnet_lexicon(lexicon_path, src2id):
+def get_wordnet_lexicon(lexicon_path, syn2id=None, pos_filter="False"):
     """Reads the WordNet dictionary
 
     Args:
@@ -27,14 +27,19 @@ def get_wordnet_lexicon(lexicon_path, src2id):
         lemma, synsets = fields[0], fields[1:]
         if len(synsets) > max_synsets:
             max_synsets = len(synsets)
-        for entry in synsets:
+        for i, entry in enumerate(synsets):
             synset = entry[:10].strip()
-            if lemma not in lemma2synsets:
-                lemma2synsets[lemma] = [synset]
-                lemma2synset_ids[lemma.encode('utf-8')] = [src2id[synset] if synset in src2id else src2id["<UNK>"]]
+            if pos_filter == "True":
+                pos = synset[-1]
+                lemma_pos = lemma + "-" + pos
             else:
-                lemma2synsets[lemma].append(synset)
-                lemma2synset_ids[lemma.encode('utf-8')].append(src2id[synset] if synset in src2id else src2id["<UNK>"])
+                lemma_pos = lemma
+            if lemma_pos not in lemma2synsets:
+                lemma2synsets[lemma_pos] = [synset]
+                lemma2synset_ids[lemma_pos.encode('utf-8')] = [syn2id[synset] if synset in syn2id else syn2id["<UNK>"]]
+            else:
+                lemma2synsets[lemma_pos].append(synset)
+                lemma2synset_ids[lemma_pos.encode('utf-8')].append(syn2id[synset] if synset in syn2id else syn2id["<UNK>"])
     lemma2synsets = collections.OrderedDict(sorted(lemma2synsets.items()))
     lemma2synset_ids = collections.OrderedDict(sorted(lemma2synset_ids.items()))
     return lemma2synsets, lemma2synset_ids, max_synsets
@@ -222,7 +227,7 @@ def read_data_naf(path, lemma2synsets, lemma2id={}, known_lemmas=set(), synset2i
 
 
 def read_data_uef(path, sensekey2synset, lemma2synsets, lemma2id={}, known_lemmas=set(), synset2id={},
-                  for_training=True, wsd_method="classification"):
+                  for_training=True, wsd_method="classification", pos_filter="False"):
     """Reads a corpus in the Universal Evaluation Framework (UEF) format
 
     Args:
@@ -264,6 +269,7 @@ def read_data_uef(path, sensekey2synset, lemma2synsets, lemma2id={}, known_lemma
     corpora = doc.findall("corpus")
     for corpus in corpora:
         texts = corpus.findall("text")
+        count_double_synsets = 0
         for text in texts:
             sentences = text.findall("sentence")
             for sentence in sentences:
@@ -272,9 +278,13 @@ def read_data_uef(path, sensekey2synset, lemma2synsets, lemma2id={}, known_lemma
                 for element in elements:
                     wordform = element.text
                     lemma = element.get("lemma")
-                    if for_training is True:
-                        known_lemmas.add(lemma)
                     pos = element.get("pos")
+                    if for_training is True:
+                        if pos_filter == "True":
+                            pos_simple = globals.pos_map_simple[pos] if pos in globals.pos_map_simple else "func"
+                            known_lemmas.add(lemma + "-" + pos_simple)
+                        else:
+                            known_lemmas.add(lemma)
                     if pos not in pos_types:
                         pos_types[pos] = pos_count
                         pos_count += 1
@@ -282,14 +292,18 @@ def read_data_uef(path, sensekey2synset, lemma2synsets, lemma2id={}, known_lemma
                         synsets = [sensekey2synset[key] for key in codes2keys[element.get("id")]]
                     else:
                         synsets = ["<NONE>"]
+                    if len(synsets) > 1:
+                        count_double_synsets += 1
                     current_sentence.append([wordform, lemma, pos, synsets])
                 data.append(current_sentence)
     if for_training is True:
         lemma2id, synset2id = get_lemma_synset_maps(wsd_method, lemma2synsets, known_lemmas, lemma2id, synset2id)
     # data = add_synset_ids(wsd_method, data, known_lemmas, synset2id)
+    print("The number of double gold labels is %d" % (int(count_double_synsets),))
     return data, lemma2id, known_lemmas, pos_types, synset2id
 
-def get_ids(data, input2id, synset2id, lemma2synsets, input_format="lemma", method="context_embedding", max_length=100):
+def get_ids(data, input2id, synset2id, lemma2synsets, input_format="lemma", method="context_embedding", max_length=100,
+            pos_filter="False"):
     """Converts the string data to numerical IDs per word, to be passed to the model during training/evaluation.
 
     Args:
@@ -322,16 +336,28 @@ def get_ids(data, input2id, synset2id, lemma2synsets, input_format="lemma", meth
             if word[3][0] != "<NONE>":
                 current_mask.append(True)
                 if method == "classification":
-                    current_gold_ids.append([input2id[synset] if synset in input2id else input2id["<UNK>"] for synset in word[3]])
+                    # TODO Picking only the first synset in cases of multiple gold labels; need to think more on handling it.
+                    # current_gold_ids.append([synset2id[synset] if synset in synset2id else synset2id["<UNK>"] for synset in word[3]])
+                    current_gold_ids.append(synset2id[word[3][0]] if word[3][0] in synset2id else synset2id["<UNK>"])
                 elif method == "context_embedding":
-                    current_gold_ids.append([synset2id[synset] if synset in synset2id else synset2id["<UNK>"] for synset in word[3]])
+                    # current_gold_ids.append([input2id[synset] if synset in input2id else input2id["<UNK>"] for synset in word[3]])
+                    current_gold_ids.append(input2id[word[3][0]] if word[3][0] in input2id else input2id["<UNK>"])
                 # taking only the first synset from the gold labels (not a problem for Sem/Senseval, but inaccurate for SemCor
-                current_gold_idxs.append(lemma2synsets[word[1]].index(word[3][0]))
+                if pos_filter == "True":
+                    lemma_pos = word[1] + "-" + globals.pos_map_simple[word[2]]
+                else:
+                    lemma_pos = word[1]
+                current_gold_idxs.append(lemma2synsets[lemma_pos].index(word[3][0]))
             else:
                 current_mask.append(False)
-                current_gold_ids.append([0]) # '<UNK>' in both cases
+                # current_gold_ids.append([0]) # '<UNK>' in both cases
+                current_gold_ids.append(0)
                 current_gold_idxs.append(-1)
-            current_lemmas.append(word[1])
+            if pos_filter == "True":
+                pos = globals.pos_map_simple[word[2]] if word[2] in globals.pos_map_simple else "func"
+                current_lemmas.append(word[1] + "-" + pos)
+            else:
+                current_lemmas.append(word[1])
         input_ids.append(current_sent)
         mask.append(current_mask)
         gold_ids.append(current_gold_ids)
@@ -364,12 +390,11 @@ def get_sequence(x, data, lemmas, mask, gold_labels, gold_idxs, embeddings, outp
     lemmas = tf.gather(lemmas, x)
     mask = tf.gather(mask, x)
     labels = tf.gather(gold_labels, x)
-    #TODO add option for one-hot embedding
     if method == "classification":
         labels = tf.one_hot(labels, output_size)
     elif method == "context_embedding":
         labels = tf.gather(embeddings, labels)
-        labels = tf.reduce_mean(labels, 1)
+        # labels = tf.reduce_mean(labels, 1) # not necessary when using only 1 gold label
     idxs = tf.gather(gold_idxs, x)
     return ((sequence, lemmas, mask, idxs), labels)
 
