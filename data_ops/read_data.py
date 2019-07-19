@@ -78,6 +78,21 @@ def get_lemma_synset_maps(wsd_method, lemma2synsets, known_lemmas, lemma2id, syn
                 index_s += 1
     return lemma2id, synset2id
 
+def get_synID2embID_dict(synset2id, emb_src2id):
+    synID2embID = {}
+    for syn, id in synset2id.items():
+        if syn in emb_src2id:
+            synID2embID[id] = emb_src2id[syn]
+        else:
+            synID2embID[id] = emb_src2id["<UNK>"]
+    return synID2embID
+
+def get_lookup_table(dictionary):
+    keys = list(dictionary.keys())
+    values = [dictionary[k] for k in keys]
+    table_initializer = tf.lookup.KeyValueTensorInitializer(keys, values)
+    synID2embID = tf.lookup.StaticHashTable(table_initializer, default_value=dictionary[0])
+    table_initializer.initialize(synID2embID)
 
 def add_synset_ids(wsd_method, data, known_lemmas, synset2id):
     """Adds integer IDs for the synset annotations of words in data
@@ -335,7 +350,7 @@ def get_ids(data, input2id, synset2id, lemma2synsets, input_format="lemma", meth
                 current_sent.append(input2id[word[1]] if word[1] in input2id else input2id["<UNK>"])
             if word[3][0] != "<NONE>":
                 current_mask.append(True)
-                if method == "classification":
+                if method == "classification" or method == "multitask":
                     # TODO Picking only the first synset in cases of multiple gold labels; need to think more on handling it.
                     # current_gold_ids.append([synset2id[synset] if synset in synset2id else synset2id["<UNK>"] for synset in word[3]])
                     current_gold_ids.append(synset2id[word[3][0]] if word[3][0] in synset2id else synset2id["<UNK>"])
@@ -371,7 +386,7 @@ def get_ids(data, input2id, synset2id, lemma2synsets, input_format="lemma", meth
     gold_idxs = tf.ragged.constant(gold_idxs, dtype="int32")
     return input_ids, input_lemmas, indices, gold_ids, gold_idxs, data_len
 
-def get_sequence(x, data, lemmas, mask, gold_labels, gold_idxs, embeddings, output_size, method):
+def get_sequence(x, data, lemmas, mask, gold_labels, gold_idxs, embeddings, output_size, method, synID2embID=None):
     """Retrieves one training/evaluation batch, to be passed to the model.
 
     Args:
@@ -395,6 +410,12 @@ def get_sequence(x, data, lemmas, mask, gold_labels, gold_idxs, embeddings, outp
     elif method == "context_embedding":
         labels = tf.gather(embeddings, labels)
         # labels = tf.reduce_mean(labels, 1) # not necessary when using only 1 gold label
+    elif method == "multitask":
+        # emb_ids = [synID2embID[id] for sent in tf.map_fn(labels) for id in tf.map_fn(sent)]
+        emb_ids = tf.map_fn(lambda label: synID2embID.lookup(label), labels)
+        labels = (tf.one_hot(labels, output_size[0]), tf.gather(embeddings, emb_ids))
+        # labels = (tf.one_hot(labels, output_size[0]), tf.gather(embeddings, emb_ids))
+        # labels = (tf.one_hot(labels, output_size), tf.gather(embeddings, labels))
     idxs = tf.gather(gold_idxs, x)
     return ((sequence, lemmas, mask, idxs), labels)
 

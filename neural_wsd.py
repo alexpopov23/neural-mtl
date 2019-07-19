@@ -9,7 +9,6 @@ from tensorflow.python.keras.optimizer_v2.adam import Adam
 import models
 from data_ops import read_data, load_embeddings
 
-
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Train or evaluate a neural WSD model.', fromfile_prefix_chars='@')
@@ -111,6 +110,8 @@ if __name__ == "__main__":
             input_format=args.embeddings1_input,
             method=args.wsd_method,
             pos_filter=args.pos_filter)
+    synID2embID_dict = read_data.get_synID2embID_dict(synset2id, emb1_src2id)
+    synID2embID = read_data.get_lookup_table(synID2embID_dict)
     if args.test_data_format == "naf":
         test_data, _, _, _, _ = read_data.read_data_naf(args.test_data_path,
                                                         lemma2synsets,
@@ -172,7 +173,7 @@ if __name__ == "__main__":
     elif args.wsd_method == "context_embedding":
         output_dim = int(args.embeddings1_dim)
     elif args.wsd_method == "multitask":
-        output_dim = (len(synset2id), int(args.wsd_method))
+        output_dim = (len(synset2id), int(args.embeddings1_dim))
     max_seq_length = int(args.max_seq_length)
     if args.wsd_method == "multitask":
         padded_shapes = ((((max_seq_length),
@@ -180,7 +181,7 @@ if __name__ == "__main__":
                            (max_seq_length),
                            (max_seq_length)),
                           ((max_seq_length, output_dim[0]), (max_seq_length, output_dim[1]))))
-        padding_values = ((0, "<PAD>", False, -1), 0.0)
+        padding_values = ((0, "<PAD>", False, -1), (0.0, 0.0))
     else:
         padded_shapes = ( ( ( (max_seq_length),
                               (max_seq_length),
@@ -197,12 +198,12 @@ if __name__ == "__main__":
                                                                        train_gold_idxs,
                                                                        embeddings1,
                                                                        output_dim,
-                                                                       args.wsd_method))
+                                                                       args.wsd_method,
+                                                                       synID2embID))
     train_dataset = train_dataset.shuffle(10000)
     train_dataset = train_dataset.padded_batch(int(args.batch_size),
                                                padded_shapes=padded_shapes,
                                                padding_values=padding_values)
-
     dev_dataset = tf.data.Dataset.range(dev_len)
     dev_dataset = dev_dataset.map(lambda x: read_data.get_sequence(x,
                                                                    dev_input_ids,
@@ -212,7 +213,8 @@ if __name__ == "__main__":
                                                                    dev_gold_idxs,
                                                                    embeddings1,
                                                                    output_dim,
-                                                                   args.wsd_method))
+                                                                   args.wsd_method,
+                                                                   synID2embID))
     dev_dataset = dev_dataset.shuffle(10000)
     dev_dataset = dev_dataset.padded_batch(int(args.batch_size),
                                                padded_shapes=padded_shapes,
@@ -229,14 +231,17 @@ if __name__ == "__main__":
     optimizer = Adam()
     if args.wsd_method == "classification":
         loss_fn = keras.losses.CategoricalCrossentropy()
-        loss_acc = None
-        train_metric, val_metric = keras.metrics.CategoricalCrossentropy(), keras.metrics.CategoricalCrossentropy()
+        train_metric, val_metric = None, None
     elif args.wsd_method == "context_embedding":
         loss_fn = keras.losses.MeanSquaredError()
-        loss_acc = keras.losses.CosineSimilarity()
+        train_metric, val_metric = keras.metrics.CosineSimilarity(), keras.metrics.CosineSimilarity()
+    elif args.wsd_method == "multitask":
+        loss_fn = models.MultitaskLoss(keras.losses.CategoricalCrossentropy(), keras.losses.MeanSquaredError())
         train_metric, val_metric = keras.metrics.CosineSimilarity(), keras.metrics.CosineSimilarity()
     # train_metric, val_metric = keras.metrics.CosineSimilarity(), keras.metrics.CosineSimilarity()
     train_accuracy, val_accuracy = tf.metrics.Accuracy(), tf.metrics.Accuracy()
+    if args.wsd_method == "multitask":
+        train_accuracy2, val_accuracy2 = tf.metrics.Accuracy(), tf.metrics.Accuracy()
     for epoch in range(3):
         print('Start of epoch %d' % (epoch,))
         step = 0
@@ -248,26 +253,41 @@ if __name__ == "__main__":
                                         for lemma in lemmas]
                 elif args.wsd_method == "context_embedding":
                     possible_synsets = [lemma2synset_ids[lemma.numpy()] for lemma in lemmas]
+                elif args.wsd_method == "multitask":
+                    possible_synsets = ([[synset2id[syn] for syn in lemma2synsets[lemma.numpy().decode("utf-8")]]
+                                         for lemma in lemmas],
+                                        [lemma2synset_ids[lemma.numpy()] for lemma in lemmas])
                 outputs = model(x_batch_train)
-                outputs = tf.boolean_mask(outputs, mask)
-                true_preds = tf.boolean_mask(y_batch_train, mask)
+                if args.wsd_method == "classification" or args.wsd_method == "context_embedding":
+                    outputs = tf.boolean_mask(outputs, mask)
+                    true_preds = tf.boolean_mask(y_batch_train, mask)
+                elif args.wsd_method == "multitask":
+                    outputs = (tf.boolean_mask(outputs[0], mask), tf.boolean_mask(outputs[1], mask))
+                    true_preds = (tf.boolean_mask(y_batch_train[0], mask), tf.boolean_mask(y_batch_train[1], mask))
                 loss_value = loss_fn(true_preds, outputs)
-                train_metric(true_preds, outputs)
+                if train_metric is not None:
+                    if args.wsd_method == "context_embedding":
+                        train_metric.update_state(true_preds, outputs)
+                    elif args.wsd_method == "multitask":
+                        train_metric.update_state(true_preds[1], outputs[1])
                 if step % 50 == 0:
                     true_idxs = tf.boolean_mask(true_idxs, mask)
                     accuracy = models.accuracy(outputs, possible_synsets, embeddings1, true_idxs, train_accuracy,
-                                               args.wsd_method)
+                                               args.wsd_method, train_accuracy2)
                     train_accuracy.reset_states()
             grads = tape.gradient(loss_value, model.trainable_weights)
             optimizer.apply_gradients(zip(grads, model.trainable_weights))
             if step % 50 == 0:
                 print('Training loss (for one batch) at step %s: %s' % (step, float(loss_value)))
-                print('Accuracy on last batch is: %s' % (accuracy))
+                print('Accuracy on last batch is: %s' % (accuracy[0]))
+                if args.wsd_method == "multitask":
+                    print('Alternative accuracy (cosine similarity) on last batch is: %s' % (accuracy[1]))
                 print('Seen so far: %s samples' % ((step + 1) * int(args.batch_size)))
             step += 1
-        cosine_sim = train_metric.result()
-        print('Cosine similarity for the iteration is: %s' % (float(cosine_sim)))
-        train_metric.reset_states()
+        if args.wsd_method == "context_embdding" or args.wsd_method == "multitask":
+            cosine_sim = train_metric.result()
+            print('Cosine similarity for the iteration is: %s' % (float(cosine_sim)))
+            train_metric.reset_states()
 
         # Run a validation loop at the end of each epoch.
         for (x_batch_dev, x_batch_lemmas, mask, true_idxs), y_batch_dev in dev_dataset.__iter__():
@@ -278,17 +298,39 @@ if __name__ == "__main__":
                                     for lemma in lemmas]
             elif args.wsd_method == "context_embedding":
                 possible_synsets = [lemma2synset_ids[lemma.numpy()] for lemma in lemmas]
+            elif args.wsd_method == "multitask":
+                possible_synsets = ([[synset2id[syn] if syn in synset2id else synset2id["<UNK>"]
+                                      for syn in lemma2synsets[lemma.numpy().decode("utf-8")]]
+                                     for lemma in lemmas],
+                                    [lemma2synset_ids[lemma.numpy()] for lemma in lemmas])
             outputs = model(x_batch_dev)
-            outputs = tf.boolean_mask(outputs, mask)
-            true_preds = tf.boolean_mask(y_batch_dev, mask)
-            loss_value = loss_fn(true_preds, outputs)
-            val_metric(true_preds, outputs)
+            # outputs = tf.boolean_mask(outputs, mask)
+            # true_preds = tf.boolean_mask(y_batch_dev, mask)
+            # loss_value = loss_fn(true_preds, outputs)
+            if args.wsd_method == "classification" or args.wsd_method == "context_embedding":
+                outputs = tf.boolean_mask(outputs, mask)
+                true_preds = tf.boolean_mask(y_batch_dev, mask)
+            elif args.wsd_method == "multitask":
+                outputs = (tf.boolean_mask(outputs[0], mask), tf.boolean_mask(outputs[1], mask))
+                true_preds = (tf.boolean_mask(y_batch_dev[0], mask), tf.boolean_mask(y_batch_dev[1], mask))
+            if val_metric is not None:
+                if args.wsd_method == "context_embedding":
+                    val_metric.update_state(true_preds, outputs)
+                elif args.wsd_method == "multitask":
+                    val_metric.update_state(true_preds[1], outputs[1])
             true_idxs = tf.boolean_mask(true_idxs, mask)
-            accuracy = models.accuracy(outputs, possible_synsets, embeddings1, true_idxs, val_accuracy, args.wsd_method)
+            accuracy = models.accuracy(outputs, possible_synsets, embeddings1, true_idxs, val_accuracy, args.wsd_method,
+                                       val_accuracy2)
             # val_metric(true_preds, outputs)
         val_cosine_sim = val_metric.result()
         val_metric.reset_states()
+        print('Validation cosine similarity metric: %s' % (float(val_cosine_sim),))
         val_acc = val_accuracy.result()
         val_accuracy.reset_states()
-        print('Validation cosine similarity metric: %s' % (float(val_cosine_sim),))
         print('Validation accuracy: %s' % (float(val_acc),))
+        if args.wsd_method == "multitask":
+            val_acc2 = val_accuracy2.result()
+            val_accuracy2.reset_states()
+            print('Alternative validation accuracy (cosine similarity) on last batch is: %s' % (float(val_acc2)))
+
+

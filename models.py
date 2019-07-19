@@ -22,16 +22,20 @@ def get_model(method, embeddings, output_dim, max_seq_length, n_hidden, dropout)
                                         name="BiLSTM",
                                         merge_mode="concat")(emb_inputs)
     dropout = keras.layers.Dropout(dropout, name="Dropout")(bilstm)
-    outputs = keras.layers.Dense(output_dim, activation='relu', name="Relu")(dropout)
-    # outputs = keras.layers.Dense(output_dim, activation='linear', name="LinearLayer")(dropout)
-    if method == "classification":
-        # outputs = keras.layers.Dense(output_dim, activation='softmax', name="Softmax")(outputs)
-        outputs = keras.layers.Activation('softmax')(outputs)
+    # outputs = keras.layers.Dense(output_dim, activation='relu', name="Relu")(dropout)
+    if method == "multitask":
+        outputs1 = keras.layers.Dense(output_dim[0], activation='relu', name="Relu_classif")(dropout)
+        outputs2 = keras.layers.Dense(output_dim[1], activation='relu', name="Relu_embed")(dropout)
+        outputs = (keras.layers.Activation('softmax')(outputs1), outputs2)
+    else:
+        outputs = keras.layers.Dense(output_dim, activation='relu', name="Relu")(dropout)
+        if method == "classification":
+            outputs = keras.layers.Activation('softmax')(outputs)
     model = keras.Model(inputs=inputs, outputs=outputs)
     return model
 
 
-def accuracy(predictions, possible_synsets, embeddings, true_preds, metric, method):
+def accuracy(predictions, possible_synsets, embeddings, true_preds, metric, method, metric2=None):
     """Calculates accuracy of a model run
 
     Args:
@@ -43,19 +47,46 @@ def accuracy(predictions, possible_synsets, embeddings, true_preds, metric, meth
     Returns:
         A scalar; the accuracy of the run.
     """
-    choices = []
-    for i, word in enumerate(predictions):
-            all_synsets = possible_synsets[i]
+    choices, choices2 = [], []
+    for i, word in enumerate(zip(predictions[0], predictions[1])):
+            # all_synsets = possible_synsets[i]
             if method == "classification":
-                activations = tf.gather(word, all_synsets)
+                synset_ids = possible_synsets[i]
+            elif method == "context_embeddings":
+                synset_embedding_ids = possible_synsets[i]
+            elif method == "multitask":
+                synset_ids = possible_synsets[0][i]
+                synset_embedding_ids = possible_synsets[1][i]
+            if method == "classification" or method == "multitask":
+                activations = tf.gather(word[0], synset_ids)
                 choices.append(tf.argmax(activations))
-            elif method == "context_embedding":
-                possible_golds = tf.gather(embeddings, all_synsets)
-                tiled_prediction = tf.tile(tf.reshape(word, [1, -1]), [len(all_synsets), 1])
+            if method == "context_embedding" or method == "multitask":
+                possible_golds = tf.gather(embeddings, synset_embedding_ids)
+                tiled_prediction = tf.tile(tf.reshape(word[1], [1, -1]), [len(synset_embedding_ids), 1])
                 similarities = keras.losses.CosineSimilarity(reduction=losses_utils.ReductionV2.NONE)(possible_golds,
                                                                                                       tiled_prediction)
-                choices.append(tf.argmax(similarities))
+                if method == "multitask":
+                    choices2.append(tf.argmax(similarities))
+                else:
+                    choices.append(tf.argmax(similarities))
     metric.update_state(true_preds, tf.stack(choices))
-    return metric.result().numpy()
+    result = metric.result().numpy()
+    if method == "multitask" and metric2 is not None:
+        metric2.update_state(true_preds, tf.stack(choices2))
+        result2 = metric2.result().numpy()
+    else:
+        result2 = 0.0
+    return result, result2
 
+class MultitaskLoss():
+    """Takes two loss functions for separate pathways in the neural net and returns the sum of their results
+    """
 
+    def __init__(self, loss1, loss2):
+        self.loss1 = loss1
+        self.loss2 = loss2
+
+    def __call__(self, true_preds, outputs):
+        loss_value1 = self.loss1(true_preds[0], outputs[0])
+        loss_value2 = self.loss2(true_preds[1], outputs[1])
+        return loss_value1 + loss_value2
