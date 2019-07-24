@@ -3,6 +3,7 @@ import tensorflow as tf
 from tensorflow.python import keras
 from tensorflow.python.keras.utils import losses_utils
 
+
 def get_model(method, embeddings, output_dim, max_seq_length, n_hidden, dropout):
     """Creates the NN model
 
@@ -16,16 +17,21 @@ def get_model(method, embeddings, output_dim, max_seq_length, n_hidden, dropout)
     Return:
         models: tf.keras.Model()
     """
-    inputs = keras.Input(shape=(max_seq_length,), name='Word_ids', dtype="int32")
-    emb_inputs = tf.gather(embeddings, inputs, name="Embed_inputs")
+    inputs = (keras.Input(shape=(max_seq_length,), name='Word_ids', dtype="int32"),
+              keras.Input(shape=(max_seq_length,), name="Mask", dtype="float32"))
+    emb_inputs = keras.layers.Embedding(len(embeddings),
+                                        len(embeddings[0]),
+                                        mask_zero=True,
+                                        weights=[embeddings])(inputs[0])
     bilstm = keras.layers.Bidirectional(keras.layers.LSTM(n_hidden, return_sequences=True),
                                         name="BiLSTM",
                                         merge_mode="concat")(emb_inputs)
     dropout = keras.layers.Dropout(dropout, name="Dropout")(bilstm)
-    # outputs = keras.layers.Dense(output_dim, activation='relu', name="Relu")(dropout)
+    unmasked = keras.layers.Multiply()([bilstm, tf.expand_dims(inputs[1], -1)])
+    masked = keras.layers.Masking(mask_value=0.0)(unmasked)
     if method == "multitask":
-        outputs1 = keras.layers.Dense(output_dim[0], activation='relu', name="Relu_classif")(dropout)
-        outputs2 = keras.layers.Dense(output_dim[1], activation='relu', name="Relu_embed")(dropout)
+        outputs1 = keras.layers.Dense(output_dim[0], activation='relu', name="Relu_classif")(masked)
+        outputs2 = keras.layers.Dense(output_dim[1], activation='relu', name="Relu_embed")(masked)
         outputs = (keras.layers.Activation('softmax')(outputs1), outputs2)
     else:
         outputs = keras.layers.Dense(output_dim, activation='relu', name="Relu")(dropout)

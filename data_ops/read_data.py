@@ -78,21 +78,19 @@ def get_lemma_synset_maps(wsd_method, lemma2synsets, known_lemmas, lemma2id, syn
                 index_s += 1
     return lemma2id, synset2id
 
-def get_synID2embID_dict(synset2id, emb_src2id):
-    synID2embID = {}
+def get_lookup_table(synset2id, emb_src2id):
+    synID2embID_dict = {}
     for syn, id in synset2id.items():
         if syn in emb_src2id:
-            synID2embID[id] = emb_src2id[syn]
+            synID2embID_dict[id] = emb_src2id[syn]
         else:
-            synID2embID[id] = emb_src2id["<UNK>"]
-    return synID2embID
-
-def get_lookup_table(dictionary):
-    keys = list(dictionary.keys())
-    values = [dictionary[k] for k in keys]
+            synID2embID_dict[id] = emb_src2id["<UNK>"]
+    keys = list(synID2embID_dict.keys())
+    values = [synID2embID_dict[k] for k in keys]
     table_initializer = tf.lookup.KeyValueTensorInitializer(keys, values)
-    synID2embID = tf.lookup.StaticHashTable(table_initializer, default_value=dictionary[0])
+    synID2embID = tf.lookup.StaticHashTable(table_initializer, default_value=synID2embID_dict[0])
     table_initializer.initialize(synID2embID)
+    return synID2embID
 
 def add_synset_ids(wsd_method, data, known_lemmas, synset2id):
     """Adds integer IDs for the synset annotations of words in data
@@ -313,7 +311,6 @@ def read_data_uef(path, sensekey2synset, lemma2synsets, lemma2id={}, known_lemma
                 data.append(current_sentence)
     if for_training is True:
         lemma2id, synset2id = get_lemma_synset_maps(wsd_method, lemma2synsets, known_lemmas, lemma2id, synset2id)
-    # data = add_synset_ids(wsd_method, data, known_lemmas, synset2id)
     print("The number of double gold labels is %d" % (int(count_double_synsets),))
     return data, lemma2id, known_lemmas, pos_types, synset2id
 
@@ -349,7 +346,7 @@ def get_ids(data, input2id, synset2id, lemma2synsets, input_format="lemma", meth
             elif input_format == "lemma":
                 current_sent.append(input2id[word[1]] if word[1] in input2id else input2id["<UNK>"])
             if word[3][0] != "<NONE>":
-                current_mask.append(True)
+                current_mask.append(1.)
                 if method == "classification" or method == "multitask":
                     # TODO Picking only the first synset in cases of multiple gold labels; need to think more on handling it.
                     # current_gold_ids.append([synset2id[synset] if synset in synset2id else synset2id["<UNK>"] for synset in word[3]])
@@ -364,7 +361,7 @@ def get_ids(data, input2id, synset2id, lemma2synsets, input_format="lemma", meth
                     lemma_pos = word[1]
                 current_gold_idxs.append(lemma2synsets[lemma_pos].index(word[3][0]))
             else:
-                current_mask.append(False)
+                current_mask.append(0.)
                 # current_gold_ids.append([0]) # '<UNK>' in both cases
                 current_gold_ids.append(0)
                 current_gold_idxs.append(-1)
@@ -381,7 +378,7 @@ def get_ids(data, input2id, synset2id, lemma2synsets, input_format="lemma", meth
         data_len = len(input_ids)
     input_ids = tf.ragged.constant(input_ids, dtype="int32")
     input_lemmas = tf.ragged.constant(input_lemmas, dtype="string")
-    indices = tf.ragged.constant(mask, dtype="bool")
+    indices = tf.ragged.constant(mask, dtype="float32")
     gold_ids = tf.ragged.constant(gold_ids, dtype="int32")
     gold_idxs = tf.ragged.constant(gold_idxs, dtype="int32")
     return input_ids, input_lemmas, indices, gold_ids, gold_idxs, data_len
@@ -409,13 +406,9 @@ def get_sequence(x, data, lemmas, mask, gold_labels, gold_idxs, embeddings, outp
         labels = tf.one_hot(labels, output_size)
     elif method == "context_embedding":
         labels = tf.gather(embeddings, labels)
-        # labels = tf.reduce_mean(labels, 1) # not necessary when using only 1 gold label
     elif method == "multitask":
-        # emb_ids = [synID2embID[id] for sent in tf.map_fn(labels) for id in tf.map_fn(sent)]
         emb_ids = tf.map_fn(lambda label: synID2embID.lookup(label), labels)
         labels = (tf.one_hot(labels, output_size[0]), tf.gather(embeddings, emb_ids))
-        # labels = (tf.one_hot(labels, output_size[0]), tf.gather(embeddings, emb_ids))
-        # labels = (tf.one_hot(labels, output_size), tf.gather(embeddings, labels))
     idxs = tf.gather(gold_idxs, x)
     return ((sequence, lemmas, mask, idxs), labels)
 
