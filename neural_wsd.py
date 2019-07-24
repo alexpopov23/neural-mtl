@@ -9,6 +9,47 @@ from tensorflow.python.keras.optimizer_v2.adam import Adam
 import models
 from data_ops import read_data, load_embeddings
 
+
+def eval_loop(args, dataset, eval_accuracy, eval_metric, eval_accuracy2=None, mode="Validation"):
+    for (x_batch_dev, x_batch_lemmas, mask, true_idxs), y_batch_dev in dataset.__iter__():
+        lemmas = tf.boolean_mask(x_batch_lemmas, mask)
+        if args.wsd_method == "classification":
+            possible_synsets = [[synset2id[syn] if syn in synset2id else synset2id["<UNK>"]
+                                 for syn in lemma2synsets[lemma.numpy().decode("utf-8")]]
+                                for lemma in lemmas]
+        elif args.wsd_method == "context_embedding":
+            possible_synsets = [lemma2synset_ids[lemma.numpy()] for lemma in lemmas]
+        elif args.wsd_method == "multitask":
+            possible_synsets = ([[synset2id[syn] if syn in synset2id else synset2id["<UNK>"]
+                                  for syn in lemma2synsets[lemma.numpy().decode("utf-8")]]
+                                 for lemma in lemmas],
+                                [lemma2synset_ids[lemma.numpy()] for lemma in lemmas])
+        outputs = model((x_batch_dev, mask))
+        if args.wsd_method == "classification" or args.wsd_method == "context_embedding":
+            outputs = tf.boolean_mask(outputs, mask)
+            true_preds = tf.boolean_mask(y_batch_dev, mask)
+        elif args.wsd_method == "multitask":
+            outputs = (tf.boolean_mask(outputs[0], mask), tf.boolean_mask(outputs[1], mask))
+            true_preds = (tf.boolean_mask(y_batch_dev[0], mask), tf.boolean_mask(y_batch_dev[1], mask))
+        if val_metric is not None:
+            if args.wsd_method == "context_embedding":
+                val_metric.update_state(true_preds, outputs)
+            elif args.wsd_method == "multitask":
+                val_metric.update_state(true_preds[1], outputs[1])
+        true_idxs = tf.boolean_mask(true_idxs, mask)
+        accuracy = models.accuracy(outputs, possible_synsets, embeddings1, true_idxs, eval_accuracy, args.wsd_method,
+                                   eval_accuracy2)
+    eval_cosine_sim = eval_metric.result()
+    eval_metric.reset_states()
+    print('%s cosine similarity metric: %s' % (mode, float(eval_cosine_sim),))
+    eval_acc = eval_accuracy.result()
+    eval_accuracy.reset_states()
+    print('%s accuracy: %s' % (mode, float(eval_acc),))
+    if args.wsd_method == "multitask":
+        eval_acc2 = eval_accuracy2.result()
+        eval_accuracy2.reset_states()
+        print('Alternative %s accuracy (cosine similarity): %s' % (mode, float(eval_acc2)))
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Train or evaluate a neural WSD model.', fromfile_prefix_chars='@')
@@ -242,6 +283,8 @@ if __name__ == "__main__":
     train_accuracy, val_accuracy = tf.metrics.Accuracy(), tf.metrics.Accuracy()
     if args.wsd_method == "multitask":
         train_accuracy2, val_accuracy2 = tf.metrics.Accuracy(), tf.metrics.Accuracy()
+    else:
+        train_accuracy2, val_accuracy2 = None, None
     for epoch in range(3):
         print('Start of epoch %d' % (epoch,))
         step = 0
@@ -290,43 +333,44 @@ if __name__ == "__main__":
             train_metric.reset_states()
 
         # Run a validation loop at the end of each epoch.
-        for (x_batch_dev, x_batch_lemmas, mask, true_idxs), y_batch_dev in dev_dataset.__iter__():
-            lemmas = tf.boolean_mask(x_batch_lemmas, mask)
-            if args.wsd_method == "classification":
-                possible_synsets = [[synset2id[syn] if syn in synset2id else synset2id["<UNK>"]
-                                     for syn in lemma2synsets[lemma.numpy().decode("utf-8")]]
-                                    for lemma in lemmas]
-            elif args.wsd_method == "context_embedding":
-                possible_synsets = [lemma2synset_ids[lemma.numpy()] for lemma in lemmas]
-            elif args.wsd_method == "multitask":
-                possible_synsets = ([[synset2id[syn] if syn in synset2id else synset2id["<UNK>"]
-                                      for syn in lemma2synsets[lemma.numpy().decode("utf-8")]]
-                                     for lemma in lemmas],
-                                    [lemma2synset_ids[lemma.numpy()] for lemma in lemmas])
-            outputs = model((x_batch_dev, mask))
-            if args.wsd_method == "classification" or args.wsd_method == "context_embedding":
-                outputs = tf.boolean_mask(outputs, mask)
-                true_preds = tf.boolean_mask(y_batch_dev, mask)
-            elif args.wsd_method == "multitask":
-                outputs = (tf.boolean_mask(outputs[0], mask), tf.boolean_mask(outputs[1], mask))
-                true_preds = (tf.boolean_mask(y_batch_dev[0], mask), tf.boolean_mask(y_batch_dev[1], mask))
-            if val_metric is not None:
-                if args.wsd_method == "context_embedding":
-                    val_metric.update_state(true_preds, outputs)
-                elif args.wsd_method == "multitask":
-                    val_metric.update_state(true_preds[1], outputs[1])
-            true_idxs = tf.boolean_mask(true_idxs, mask)
-            accuracy = models.accuracy(outputs, possible_synsets, embeddings1, true_idxs, val_accuracy, args.wsd_method,
-                                       val_accuracy2)
-        val_cosine_sim = val_metric.result()
-        val_metric.reset_states()
-        print('Validation cosine similarity metric: %s' % (float(val_cosine_sim),))
-        val_acc = val_accuracy.result()
-        val_accuracy.reset_states()
-        print('Validation accuracy: %s' % (float(val_acc),))
-        if args.wsd_method == "multitask":
-            val_acc2 = val_accuracy2.result()
-            val_accuracy2.reset_states()
-            print('Alternative validation accuracy (cosine similarity): %s' % (float(val_acc2)))
+        eval_loop(args, dev_data, val_accuracy, val_metric, val_accuracy2, mode="Validation")
+        # for (x_batch_dev, x_batch_lemmas, mask, true_idxs), y_batch_dev in dev_dataset.__iter__():
+        #     lemmas = tf.boolean_mask(x_batch_lemmas, mask)
+        #     if args.wsd_method == "classification":
+        #         possible_synsets = [[synset2id[syn] if syn in synset2id else synset2id["<UNK>"]
+        #                              for syn in lemma2synsets[lemma.numpy().decode("utf-8")]]
+        #                             for lemma in lemmas]
+        #     elif args.wsd_method == "context_embedding":
+        #         possible_synsets = [lemma2synset_ids[lemma.numpy()] for lemma in lemmas]
+        #     elif args.wsd_method == "multitask":
+        #         possible_synsets = ([[synset2id[syn] if syn in synset2id else synset2id["<UNK>"]
+        #                               for syn in lemma2synsets[lemma.numpy().decode("utf-8")]]
+        #                              for lemma in lemmas],
+        #                             [lemma2synset_ids[lemma.numpy()] for lemma in lemmas])
+        #     outputs = model((x_batch_dev, mask))
+        #     if args.wsd_method == "classification" or args.wsd_method == "context_embedding":
+        #         outputs = tf.boolean_mask(outputs, mask)
+        #         true_preds = tf.boolean_mask(y_batch_dev, mask)
+        #     elif args.wsd_method == "multitask":
+        #         outputs = (tf.boolean_mask(outputs[0], mask), tf.boolean_mask(outputs[1], mask))
+        #         true_preds = (tf.boolean_mask(y_batch_dev[0], mask), tf.boolean_mask(y_batch_dev[1], mask))
+        #     if val_metric is not None:
+        #         if args.wsd_method == "context_embedding":
+        #             val_metric.update_state(true_preds, outputs)
+        #         elif args.wsd_method == "multitask":
+        #             val_metric.update_state(true_preds[1], outputs[1])
+        #     true_idxs = tf.boolean_mask(true_idxs, mask)
+        #     accuracy = models.accuracy(outputs, possible_synsets, embeddings1, true_idxs, val_accuracy, args.wsd_method,
+        #                                val_accuracy2)
+        # val_cosine_sim = val_metric.result()
+        # val_metric.reset_states()
+        # print('Validation cosine similarity metric: %s' % (float(val_cosine_sim),))
+        # val_acc = val_accuracy.result()
+        # val_accuracy.reset_states()
+        # print('Validation accuracy: %s' % (float(val_acc),))
+        # if args.wsd_method == "multitask":
+        #     val_acc2 = val_accuracy2.result()
+        #     val_accuracy2.reset_states()
+        #     print('Alternative validation accuracy (cosine similarity): %s' % (float(val_acc2)))
 
 

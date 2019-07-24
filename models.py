@@ -54,11 +54,13 @@ def accuracy(predictions, possible_synsets, embeddings, true_preds, metric, meth
         A scalar; the accuracy of the run.
     """
     choices, choices2 = [], []
-    for i, word in enumerate(zip(predictions[0], predictions[1])):
+    if method == "multitask":
+        predictions = zip(predictions[0], predictions[1])
+    for i, word in enumerate(predictions):
             # all_synsets = possible_synsets[i]
             if method == "classification":
                 synset_ids = possible_synsets[i]
-            elif method == "context_embeddings":
+            elif method == "context_embedding":
                 synset_embedding_ids = possible_synsets[i]
             elif method == "multitask":
                 synset_ids = possible_synsets[0][i]
