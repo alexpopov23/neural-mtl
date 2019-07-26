@@ -27,14 +27,14 @@ def get_model(method, embeddings, output_dim, max_seq_length, n_hidden, dropout)
                                         name="BiLSTM",
                                         merge_mode="concat")(emb_inputs)
     dropout = keras.layers.Dropout(dropout, name="Dropout")(bilstm)
-    unmasked = keras.layers.Multiply()([bilstm, tf.expand_dims(inputs[1], -1)])
+    unmasked = keras.layers.Multiply()([dropout, tf.expand_dims(inputs[1], -1)])
     masked = keras.layers.Masking(mask_value=0.0)(unmasked)
     if method == "multitask":
         outputs1 = keras.layers.Dense(output_dim[0], activation='relu', name="Relu_classif")(masked)
         outputs2 = keras.layers.Dense(output_dim[1], activation='relu', name="Relu_embed")(masked)
         outputs = (keras.layers.Activation('softmax')(outputs1), outputs2)
     else:
-        outputs = keras.layers.Dense(output_dim, activation='relu', name="Relu")(dropout)
+        outputs = keras.layers.Dense(output_dim, activation='relu', name="Relu")(masked)
         if method == "classification":
             outputs = keras.layers.Activation('softmax')(outputs)
     model = keras.Model(inputs=inputs, outputs=outputs)
@@ -56,27 +56,29 @@ def accuracy(predictions, possible_synsets, embeddings, true_preds, metric, meth
     choices, choices2 = [], []
     if method == "multitask":
         predictions = zip(predictions[0], predictions[1])
-    for i, word in enumerate(predictions):
-            # all_synsets = possible_synsets[i]
-            if method == "classification":
-                synset_ids = possible_synsets[i]
-            elif method == "context_embedding":
-                synset_embedding_ids = possible_synsets[i]
-            elif method == "multitask":
-                synset_ids = possible_synsets[0][i]
-                synset_embedding_ids = possible_synsets[1][i]
-            if method == "classification" or method == "multitask":
-                activations = tf.gather(word[0], synset_ids)
-                choices.append(tf.argmax(activations))
-            if method == "context_embedding" or method == "multitask":
-                possible_golds = tf.gather(embeddings, synset_embedding_ids)
-                tiled_prediction = tf.tile(tf.reshape(word[1], [1, -1]), [len(synset_embedding_ids), 1])
-                similarities = keras.losses.CosineSimilarity(reduction=losses_utils.ReductionV2.NONE)(possible_golds,
-                                                                                                      tiled_prediction)
-                if method == "multitask":
-                    choices2.append(tf.argmax(similarities))
-                else:
-                    choices.append(tf.argmax(similarities))
+    for i, pred in enumerate(predictions):
+        if method == "classification":
+            pred_classif = pred
+            synset_ids = possible_synsets[i]
+        elif method == "context_embedding":
+            pred_embed = pred
+            synset_embedding_ids = possible_synsets[i]
+        elif method == "multitask":
+            pred_classif, pred_embed = pred[0], pred[1]
+            synset_ids = possible_synsets[0][i]
+            synset_embedding_ids = possible_synsets[1][i]
+        if method == "classification" or method == "multitask":
+            activations = tf.gather(pred_classif, synset_ids)
+            choices.append(tf.argmax(activations))
+        if method == "context_embedding" or method == "multitask":
+            possible_golds = tf.gather(embeddings, synset_embedding_ids)
+            tiled_prediction = tf.tile(tf.reshape(pred_embed, [1, -1]), [len(synset_embedding_ids), 1])
+            similarities = keras.losses.CosineSimilarity(reduction=losses_utils.ReductionV2.NONE)(possible_golds,
+                                                                                                  tiled_prediction)
+            if method == "multitask":
+                choices2.append(tf.argmax(similarities))
+            else:
+                choices.append(tf.argmax(similarities))
     metric.update_state(true_preds, tf.stack(choices))
     result = metric.result().numpy()
     if method == "multitask" and metric2 is not None:

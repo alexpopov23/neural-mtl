@@ -31,11 +31,11 @@ def eval_loop(args, dataset, eval_accuracy, eval_metric, eval_accuracy2=None, mo
         elif args.wsd_method == "multitask":
             outputs = (tf.boolean_mask(outputs[0], mask), tf.boolean_mask(outputs[1], mask))
             true_preds = (tf.boolean_mask(y_batch_dev[0], mask), tf.boolean_mask(y_batch_dev[1], mask))
-        if val_metric is not None:
+        if eval_metric is not None:
             if args.wsd_method == "context_embedding":
-                val_metric.update_state(true_preds, outputs)
+                eval_metric.update_state(true_preds, outputs)
             elif args.wsd_method == "multitask":
-                val_metric.update_state(true_preds[1], outputs[1])
+                eval_metric.update_state(true_preds[1], outputs[1])
         true_idxs = tf.boolean_mask(true_idxs, mask)
         accuracy = models.accuracy(outputs, possible_synsets, embeddings1, true_idxs, eval_accuracy, args.wsd_method,
                                    eval_accuracy2)
@@ -59,7 +59,7 @@ if __name__ == "__main__":
                         help='The path to the gold corpus used for development.')
     parser.add_argument("-dev_data_format", dest="dev_data_format", required=False, default="uef",
                         help="Specifies the format of the development corpus. Options: naf, uef")
-    parser.add_argument('-dropout', dest='dropout', required=False, default="0",
+    parser.add_argument('-dropout', dest='dropout', required=False, default="0.",
                         help='The probability of keeping an element output in a layer (for dropout)')
     parser.add_argument('-embeddings1_path', dest='embeddings1_path', required=True,
                         help='The path to the pretrained model with the primary embeddings.')
@@ -126,8 +126,6 @@ if __name__ == "__main__":
     lemma2synsets, lemma2synset_ids, max_synsets = read_data.get_wordnet_lexicon(args.lexicon_path,
                                                                                  emb1_src2id,
                                                                                  pos_filter=args.pos_filter)
-    # lemma2synset_ids = {lemma: [emb1_src2id[synset] for synset in synsets] if synset in emb1_src2id else emb1_src2id["<UNK>"]
-    #                     for lemma, synsets in lemma2synsets.items() }
 
     # Read the data sets
     if args.train_data_format == "naf":
@@ -259,6 +257,21 @@ if __name__ == "__main__":
     dev_dataset = dev_dataset.padded_batch(int(args.batch_size),
                                                padded_shapes=padded_shapes,
                                                padding_values=padding_values)
+    test_dataset = tf.data.Dataset.range(test_len)
+    test_dataset = test_dataset.map(lambda x: read_data.get_sequence(x,
+                                                                     test_input_ids,
+                                                                     test_input_lemmas,
+                                                                     test_indices,
+                                                                     test_gold_ids,
+                                                                     test_gold_idxs,
+                                                                     embeddings1,
+                                                                     output_dim,
+                                                                     args.wsd_method,
+                                                                     synID2embID))
+    test_dataset = test_dataset.shuffle(10000)
+    test_dataset = test_dataset.padded_batch(int(args.batch_size),
+                                             padded_shapes=padded_shapes,
+                                             padding_values=padding_values)
 
     # Create the model architecture
     all_indices = tf.reshape(tf.range(int(args.batch_size)*max_seq_length, dtype="int32"),
@@ -285,7 +298,7 @@ if __name__ == "__main__":
         train_accuracy2, val_accuracy2 = tf.metrics.Accuracy(), tf.metrics.Accuracy()
     else:
         train_accuracy2, val_accuracy2 = None, None
-    for epoch in range(3):
+    for epoch in range(int(args.training_iterations)):
         print('Start of epoch %d' % (epoch,))
         step = 0
         for (x_batch_train, x_batch_lemmas, mask, true_idxs), y_batch_train in train_dataset.__iter__():
@@ -333,44 +346,9 @@ if __name__ == "__main__":
             train_metric.reset_states()
 
         # Run a validation loop at the end of each epoch.
-        eval_loop(args, dev_data, val_accuracy, val_metric, val_accuracy2, mode="Validation")
-        # for (x_batch_dev, x_batch_lemmas, mask, true_idxs), y_batch_dev in dev_dataset.__iter__():
-        #     lemmas = tf.boolean_mask(x_batch_lemmas, mask)
-        #     if args.wsd_method == "classification":
-        #         possible_synsets = [[synset2id[syn] if syn in synset2id else synset2id["<UNK>"]
-        #                              for syn in lemma2synsets[lemma.numpy().decode("utf-8")]]
-        #                             for lemma in lemmas]
-        #     elif args.wsd_method == "context_embedding":
-        #         possible_synsets = [lemma2synset_ids[lemma.numpy()] for lemma in lemmas]
-        #     elif args.wsd_method == "multitask":
-        #         possible_synsets = ([[synset2id[syn] if syn in synset2id else synset2id["<UNK>"]
-        #                               for syn in lemma2synsets[lemma.numpy().decode("utf-8")]]
-        #                              for lemma in lemmas],
-        #                             [lemma2synset_ids[lemma.numpy()] for lemma in lemmas])
-        #     outputs = model((x_batch_dev, mask))
-        #     if args.wsd_method == "classification" or args.wsd_method == "context_embedding":
-        #         outputs = tf.boolean_mask(outputs, mask)
-        #         true_preds = tf.boolean_mask(y_batch_dev, mask)
-        #     elif args.wsd_method == "multitask":
-        #         outputs = (tf.boolean_mask(outputs[0], mask), tf.boolean_mask(outputs[1], mask))
-        #         true_preds = (tf.boolean_mask(y_batch_dev[0], mask), tf.boolean_mask(y_batch_dev[1], mask))
-        #     if val_metric is not None:
-        #         if args.wsd_method == "context_embedding":
-        #             val_metric.update_state(true_preds, outputs)
-        #         elif args.wsd_method == "multitask":
-        #             val_metric.update_state(true_preds[1], outputs[1])
-        #     true_idxs = tf.boolean_mask(true_idxs, mask)
-        #     accuracy = models.accuracy(outputs, possible_synsets, embeddings1, true_idxs, val_accuracy, args.wsd_method,
-        #                                val_accuracy2)
-        # val_cosine_sim = val_metric.result()
-        # val_metric.reset_states()
-        # print('Validation cosine similarity metric: %s' % (float(val_cosine_sim),))
-        # val_acc = val_accuracy.result()
-        # val_accuracy.reset_states()
-        # print('Validation accuracy: %s' % (float(val_acc),))
-        # if args.wsd_method == "multitask":
-        #     val_acc2 = val_accuracy2.result()
-        #     val_accuracy2.reset_states()
-        #     print('Alternative validation accuracy (cosine similarity): %s' % (float(val_acc2)))
+        eval_loop(args, dev_dataset, val_accuracy, val_metric, val_accuracy2, mode="Validation")
+    # Evaluate on the test set at the very end
+    test_accuracy, test_accuracy2, test_metric = tf.metrics.Accuracy(), tf.metrics.Accuracy(), keras.metrics.CosineSimilarity()
+    eval_loop(args, test_dataset, test_accuracy, test_metric, test_accuracy2, mode="Test")
 
 
